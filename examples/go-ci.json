@@ -1,0 +1,38 @@
+{
+  "version": "1.0",
+  "name": "go-ci",
+  "workspace": "/workspace/go-project",
+  "steps": [
+    {
+      "name": "checkout",
+      "image": "alpine:latest",
+      "commands": [
+        "echo '=== checkout step ==='",
+        "echo 'workspace contents:'",
+        "ls -la /workspace",
+        "echo 'checkout complete'"
+      ]
+    },
+    {
+      "name": "test",
+      "image": "alpine:latest",
+      "commands": [
+        "echo '=== test step ==='",
+        "uname -a",
+        "echo 'all tests passed'",
+        "echo 'shared workspace from checkout:'",
+        "ls -la /workspace"
+      ],
+      "depends_on": ["checkout"]
+    },
+    {
+      "name": "build",
+      "image": "alpine:latest",
+      "commands": [
+        "echo '=== build step ==='",
+        "echo 'Build complete'"
+      ],
+      "depends_on": ["test"]
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+# miniflow RAG 种子案例 — 网络连接失败
+- id: "net-001"
+  category: "network"
+  title: "DNS 解析失败"
+  match_pattern:
+    - "dial tcp: lookup"
+    - "Temporary failure in name resolution"
+    - "cannot resolve host"
+  raw_log_example: |
+    dial tcp: lookup registry.company.com on 8.8.8.8:53: no such host
+  sanitized_log: |
+    dial tcp: lookup <HOST> on <DNS>: no such host
+  root_cause: "DNS 无法解析目标主机名（可能是主机名拼写错误、DNS 服务器配置不正确或内网域名未在公网 DNS 注册）"
+  fix_suggestion:
+    description: "检查主机名拼写和 DNS 配置，确认是否需要使用内网 DNS 服务器"
+    config_override_example:
+      extra_hosts:
+        - "registry.company.com:10.0.1.100"
+
+- id: "net-002"
+  category: "network"
+  title: "连接被拒绝"
+  match_pattern:
+    - "connection refused"
+    - "connect: connection refused"
+  raw_log_example: |
+    dial tcp 10.0.1.100:443: connect: connection refused
+  sanitized_log: |
+    dial tcp <HOST>:<PORT>: connect: connection refused
+  root_cause: "目标端口未开放或服务未启动（可能是目标服务尚未就绪、防火墙拦截或端口映射错误）"
+  fix_suggestion:
+    description: "确认目标服务已启动且端口正确，检查网络安全组和防火墙规则"
+    config_override_example:
+      network: "build-network"
+
+- id: "net-003"
+  category: "network"
+  title: "TLS/SSL 握手超时"
+  match_pattern:
+    - "TLS handshake timeout"
+    - "tls: first record does not look like a TLS handshake"
+    - "remote error: tls: bad certificate"
+  raw_log_example: |
+    net/http: TLS handshake timeout from 10.0.1.50:52345
+  sanitized_log: |
+    net/http: TLS handshake timeout from <IP>
+  root_cause: "TLS 握手阶段超时，可能是网络延迟过高、对端 TLS 版本不兼容或代理配置问题"
+  fix_suggestion:
+    description: "检查网络连通性和代理配置，尝试降低 TLS 版本要求"
+    config_override_example:
+      env:
+        - "HTTP_PROXY=http://proxy.company.com:8080"
+        - "HTTPS_PROXY=http://proxy.company.com:8080"
+        - "NODE_TLS_REJECT_UNAUTHORIZED=0"

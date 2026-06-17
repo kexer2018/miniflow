@@ -1,0 +1,52 @@
+# miniflow RAG 种子案例 — 凭证认证失败
+- id: "auth-001"
+  category: "authentication"
+  title: "401 未授权"
+  match_pattern:
+    - "401 Unauthorized"
+    - "status 401"
+  raw_log_example: |
+    error: failed to authenticate: 401 Unauthorized
+  sanitized_log: |
+    error: failed to authenticate: 401 Unauthorized
+  root_cause: "API 认证凭证缺失或无效，需要提供有效的认证令牌"
+  fix_suggestion:
+    description: "检查并更新 API 认证凭证"
+    config_override_example:
+      credential_id: "api-token-prod"
+
+- id: "auth-002"
+  category: "authentication"
+  title: "证书已过期"
+  match_pattern:
+    - "certificate has expired"
+    - "x509: certificate has expired"
+    - "SSL certificate expired"
+  raw_log_example: |
+    x509: certificate has expired or is not yet valid: current time 2025-01-15T10:00:00Z is after 2024-12-31T23:59:59Z
+  sanitized_log: |
+    x509: certificate has expired or is not yet valid
+  root_cause: "SSL/TLS 证书已过期，需要更新证书"
+  fix_suggestion:
+    description: "更新 SSL/TLS 证书或联系运维团队续期"
+    config_override_example:
+      env:
+        - "NODE_TLS_REJECT_UNAUTHORIZED=0"
+
+- id: "auth-003"
+  category: "authentication"
+  title: "证书签发机构不受信任"
+  match_pattern:
+    - "x509: certificate signed by unknown authority"
+    - "self-signed certificate"
+  raw_log_example: |
+    x509: certificate signed by unknown authority
+  sanitized_log: |
+    x509: certificate signed by unknown authority
+  root_cause: "使用自签名证书或企业内部 CA 签发的证书，但系统 CA 信任列表中未包含该 CA"
+  fix_suggestion:
+    description: "添加企业 CA 证书到系统信任链，或配置环境变量跳过证书验证"
+    config_override_example:
+      env:
+        - "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+        - "NODE_EXTRA_CA_CERTS=/workspace/certs/ca.pem"

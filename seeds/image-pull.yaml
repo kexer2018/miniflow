@@ -1,0 +1,55 @@
+# miniflow RAG 种子案例 — 镜像拉取失败
+- id: "img-001"
+  category: "image_pull"
+  title: "镜像不存在于仓库"
+  match_pattern:
+    - "no such image"
+    - "manifest for .* not found"
+    - "not found: manifest unknown"
+  raw_log_example: |
+    docker: Error response from daemon: manifest for golang:1.99 not found: manifest unknown: manifest unknown.
+  sanitized_log: |
+    docker: Error response from daemon: manifest for <IMAGE> not found.
+  root_cause: "指定的容器镜像标签在目标仓库中不存在（可能是拼写错误、标签名变更或仅存在于私有仓库）"
+  fix_suggestion:
+    description: "修正镜像标签为已存在的版本"
+    config_override_example:
+      image: "golang:1.22"
+
+- id: "img-002"
+  category: "image_pull"
+  title: "私有仓库认证失败"
+  match_pattern:
+    - "unauthorized: access denied"
+    - "unauthorized: authentication required"
+    - "no basic auth credentials"
+  raw_log_example: |
+    Error response from daemon: pull access denied for registry.company.com/backend/app, repository does not exist or may require 'docker login': denied: requested access to the resource is denied
+  sanitized_log: |
+    Error response from daemon: pull access denied for <PRIVATE_IMAGE>, repository does not exist or may require 'docker login': denied: requested access to the resource is denied
+  root_cause: "Docker 客户端未登录私有镜像仓库，或凭证已过期"
+  fix_suggestion:
+    description: "配置私有仓库认证凭证"
+    config_override_example:
+      registry_auth:
+        server: "registry.company.com"
+        credential_id: "harbor-prod-token"
+
+- id: "img-003"
+  category: "image_pull"
+  title: "Docker Hub 限流"
+  match_pattern:
+    - "toomanyrequests: too many requests"
+    - "rate limit"
+    - "you have reached your pull rate limit"
+  raw_log_example: |
+    Error response from daemon: toomanyrequests: You have reached your pull rate limit. You may increase the limit by authenticating and upgrading: https://www.docker.com/increase-rate-limit
+  sanitized_log: |
+    Error response from daemon: toomanyrequests: You have reached your pull rate limit.
+  root_cause: "Docker Hub 对匿名用户有拉取频率限制（通常每小时 100-200 次）"
+  fix_suggestion:
+    description: "配置 Docker Hub 认证凭证以提高拉取限额"
+    config_override_example:
+      registry_auth:
+        server: "https://index.docker.io/v1/"
+        credential_id: "docker-hub-token"
