@@ -1,0 +1,15 @@
+# miniflow RAG 种子案例 — 文件权限错误
+- id: "perm-001"
+  category: "permission"
+  title: "权限不足"
+  match_pattern:
+    - "permission denied"
+    - "cannot open file"
+    - "access denied"
+  raw_log_example: |
+    mkdir: cannot create directory '/workspace/build': Permission denied
+  sanitized_log: |
+    mkdir: cannot create directory '***PATH***': Permission denied
+  root_cause: "容器进程没有足够的文件系统权限。容器用户（UID 1000 可能没有拥有 workspace 文件，或者目标文件/目录权限限制。"
+  fix_suggestion:
+    description: "确保 workspace 已 chown 给容器用户（默认由引擎自动处理）。如果问题持续，检查基础镜像是否支持 --user 1000 运行。"

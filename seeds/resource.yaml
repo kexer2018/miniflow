@@ -1,0 +1,52 @@
+# miniflow RAG 种子案例 — 资源耗尽错误
+- id: "res-001"
+  category: "resource"
+  title: "磁盘空间不足"
+  match_pattern:
+    - "no space left on device"
+    - "disk quota exceeded"
+  raw_log_example: |
+    docker: error writing layer: write /var/lib/docker/overlay2/...: no space left on device
+  sanitized_log: |
+    docker: error writing layer: no space left on device
+  root_cause: "容器或主机文件系统磁盘空间耗尽。构建工件或缓存目录可能过大。"
+  fix_suggestion:
+    description: "释放主机磁盘空间。考虑增加缓存清理频率或添加磁盘空间监控。"
+
+- id: "res-002"
+  category: "resource"
+  title: "内存分配失败"
+  match_pattern:
+    - "cannot allocate memory"
+    - "out of memory"
+    - "OOM killed"
+    - "memory allocation failed"
+  raw_log_example: |
+    Killed: out of memory
+    cargo: out of memory: Cannot allocate memory
+  sanitized_log: |
+    Killed: out of memory
+  root_cause: "容器已耗尽内存限制。进程被 OOM Killer 终止或无法分配所需内存。"
+  fix_suggestion:
+    description: "增加容器的内存限制，或优化构建步骤以减少内存消耗"
+    config_override_example:
+      memory: "4g"
+      memory_swap: "4g"
+
+- id: "res-003"
+  category: "resource"
+  title: "操作超时"
+  match_pattern:
+    - "timeout"
+    - "timed out"
+    - "deadline exceeded"
+    - "context deadline exceeded"
+  raw_log_example: |
+    net/http: request canceled (Client.Timeout exceeded while awaiting headers)
+  sanitized_log: |
+    net/http: request canceled (Client.Timeout exceeded)
+  root_cause: "操作超过了配置的超时时间。可能是网络慢、下载大文件或构建步骤效率低。"
+  fix_suggestion:
+    description: "增加步骤超时时间，或优化操作以更快完成"
+    config_override_example:
+      timeout: "600"

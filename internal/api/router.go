@@ -28,6 +28,9 @@ func NewRouter(handler *Handler) *Router {
 	// ─── 修复建议 ─────────────────────────────────
 	r.mux.HandleFunc("POST /api/v1/fix/suggest", handler.SuggestFix)
 
+	// ─── AI 智能诊断 ───────────────────────────────
+	r.mux.HandleFunc("POST /api/v1/diagnose", handler.Diagnose)
+
 	return r
 }
 

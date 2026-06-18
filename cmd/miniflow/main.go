@@ -7,13 +7,19 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
+	"github.com/kexer2018/miniflow/internal/config"
 	"github.com/kexer2018/miniflow/internal/container"
+	"github.com/kexer2018/miniflow/internal/db"
+	"github.com/kexer2018/miniflow/internal/fixer"
+	"github.com/kexer2018/miniflow/internal/llm"
+	internalLog "github.com/kexer2018/miniflow/internal/log"
 	internalpipeline "github.com/kexer2018/miniflow/internal/pipeline"
 	pipelinespec "github.com/kexer2018/miniflow/pkg/pipeline"
 )
@@ -21,11 +27,34 @@ import (
 // ─── 全局标志 ─────────────────────────────────────────────
 
 var (
-	verbose   bool
-	jsonInput string
+	verbose      bool
+	jsonInput    string
+	autoDiagnose bool
+	configPath   string
+)
+
+// ─── 已解析的全局配置 ────────────────────────────────────
+
+var resolvedLLM config.ResolvedLLMConfig
+
+// ─── diagnose 子命令标志 ──────────────────────────────────
+
+var (
+	diagnoseStepName string
+	diagnoseLogText  string
+	diagnoseLogFile  string
 )
 
 func main() {
+	// 在所有命令之前加载配置文件
+	cfg := loadConfig()
+	resolvedLLM = config.ResolveLLMConfig(cfg)
+	slog.Debug("llm config resolved",
+		"model", resolvedLLM.Model,
+		"base_url", resolvedLLM.BaseURL,
+		"has_api_key", resolvedLLM.APIKey != "",
+	)
+
 	rootCmd := &cobra.Command{
 		Use:   "miniflow",
 		Short: "AI-native lightweight CI/CD execution engine",
@@ -37,14 +66,35 @@ func main() {
 	}
 
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
+	rootCmd.PersistentFlags().BoolVarP(&autoDiagnose, "auto-diagnose", "d", false, "auto-diagnose failed steps")
+	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "config file path (JSON)")
+
 	rootCmd.Flags().StringVarP(&jsonInput, "file", "f", "", "pipeline JSON file (required)")
+
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newValidateCmd())
+	rootCmd.AddCommand(newDiagnoseCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
+
+// ─── 配置文件加载 ─────────────────────────────────────────
+
+func loadConfig() *config.Config {
+	if configPath != "" {
+		cfg, err := config.LoadWithFlag(configPath)
+		if err != nil {
+			slog.Warn("failed to load config file", "path", configPath, "error", err)
+		} else {
+			return cfg
+		}
+	}
+	return config.LoadDefault()
+}
+
+// ─── 流水线执行 ──────────────────────────────────────────
 
 func runPipeline(cmd *cobra.Command, args []string) error {
 	if jsonInput == "" {
@@ -65,6 +115,17 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 
 	wsManager := container.NewWorkspaceManager("")
 
+	// 初始化持久化存储
+	dbDir := filepath.Dir(container.WorkspaceBaseDir)
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
+	}
+	store, err := db.NewSQLiteStore(filepath.Join(dbDir, "miniflow.db"))
+	if err != nil {
+		return fmt.Errorf("init store: %w", err)
+	}
+	defer store.Close()
+
 	p := &internalpipeline.Pipeline{
 		ID:        uuid.New().String(),
 		Name:      spec.Name,
@@ -79,13 +140,43 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	result := executor.ExecutePipeline(ctx, p)
+
+	// 脱敏 Step 日志（用于存储和后续 LLM 分析）
+	for i, sr := range result.StepResults {
+		if sr.RawLog != "" {
+			result.StepResults[i].Sanitized = internalLog.SanitizeString(sr.RawLog)
+		}
+	}
+
 	printResult(result)
+
+	// 自动诊断失败步骤
+	if autoDiagnose && result.Status != internalpipeline.StatusSuccess {
+		autoDiagnoseFailedSteps(ctx, result)
+	}
+
+	// 持久化执行结果（非致命错误仅告警）
+	if err := store.SavePipelineResult(ctx, result); err != nil {
+		slog.Warn("failed to save pipeline result", "error", err)
+	}
+
+	// 保存执行上下文（用于中断恢复 / 审计）
+	ec := &internalpipeline.ExecContext{
+		PipelineID:   p.ID,
+		WorkspaceDir: wsManager.WorkspacePath(p.ID),
+		CacheDir:     filepath.Join(container.WorkspaceBaseDir, ".cache"),
+	}
+	if err := store.SaveExecContext(ctx, ec); err != nil {
+		slog.Warn("failed to save exec context", "error", err)
+	}
 
 	if result.Status != internalpipeline.StatusSuccess {
 		os.Exit(1)
 	}
 	return nil
 }
+
+// ─── 版本命令 ─────────────────────────────────────────────
 
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
@@ -96,6 +187,8 @@ func newVersionCmd() *cobra.Command {
 		},
 	}
 }
+
+// ─── 验证命令 ─────────────────────────────────────────────
 
 func newValidateCmd() *cobra.Command {
 	return &cobra.Command{
@@ -112,6 +205,153 @@ func newValidateCmd() *cobra.Command {
 		},
 	}
 }
+
+// ─── 诊断命令 ─────────────────────────────────────────────
+
+func newDiagnoseCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "diagnose",
+		Short: "AI diagnose a failed pipeline step log",
+		Long: `Analyze a failed step log using AI and provide root cause analysis and fix suggestions.
+
+Examples:
+  miniflow diagnose --step build --log "error: connection refused"
+  miniflow diagnose --step build --log-file ./error.log`,
+		RunE: runDiagnose,
+	}
+
+	cmd.Flags().StringVar(&diagnoseStepName, "step", "", "step name (required)")
+	cmd.Flags().StringVar(&diagnoseLogText, "log", "", "error log text")
+	cmd.Flags().StringVar(&diagnoseLogFile, "log-file", "", "file containing error log")
+
+	return cmd
+}
+
+func runDiagnose(cmd *cobra.Command, args []string) error {
+	if diagnoseStepName == "" {
+		return fmt.Errorf("--step is required")
+	}
+
+	logText := diagnoseLogText
+	if diagnoseLogFile != "" {
+		data, err := os.ReadFile(diagnoseLogFile)
+		if err != nil {
+			return fmt.Errorf("read log file: %w", err)
+		}
+		logText = string(data)
+	}
+
+	if logText == "" {
+		return fmt.Errorf("either --log or --log-file is required")
+	}
+
+	dc, err := createDiagnoseConfig()
+	if err != nil {
+		return fmt.Errorf("diagnose config: %w", err)
+	}
+
+	ctx := context.Background()
+	result := fixer.Diagnose(ctx, dc, diagnoseStepName, logText)
+	printDiagnosis(result)
+	return nil
+}
+
+// ─── 自动诊断 ─────────────────────────────────────────────
+
+// autoDiagnoseFailedSteps 对流水线中失败的步骤进行自动诊断。
+func autoDiagnoseFailedSteps(ctx context.Context, result *internalpipeline.PipelineResult) {
+	dc, err := createDiagnoseConfig()
+	if err != nil {
+		slog.Warn("auto-diagnose unavailable", "error", err)
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("═══════════════════════════════════════════")
+	fmt.Println("  ✨ AI Diagnosis")
+	fmt.Println("═══════════════════════════════════════════")
+
+	for _, sr := range result.StepResults {
+		if sr.Status != internalpipeline.StatusFailed {
+			continue
+		}
+
+		fmt.Printf("\n  📋 Diagnosing: %s\n", sr.Name)
+
+		logText := sr.RawLog
+		if sr.Sanitized != "" {
+			logText = sr.Sanitized
+		}
+
+		dx := fixer.Diagnose(ctx, dc, sr.Name, logText)
+		fmt.Println()
+		printDiagnosis(dx)
+	}
+
+	fmt.Println("═══════════════════════════════════════════")
+}
+
+// ─── 诊断配置 ─────────────────────────────────────────────
+
+// createDiagnoseConfig 从已解析的配置创建诊断配置（含 LLM 客户端）。
+func createDiagnoseConfig() (fixer.DiagnoseConfig, error) {
+	if resolvedLLM.APIKey == "" {
+		return fixer.DiagnoseConfig{}, fmt.Errorf("LLM API key not configured (set LLM_API_KEY env var or add to config file)")
+	}
+
+	llmClient := llm.NewOpenAIClientWithConfig(resolvedLLM.APIKey, resolvedLLM.BaseURL, resolvedLLM.Model)
+
+	return fixer.DiagnoseConfig{
+		LLM:        llmClient,
+		Sanitizer:  internalLog.NewSanitizerWithSemantic(),
+		Classifier: internalLog.NewClassifier(),
+		SeedEngine: fixer.NewSeedEngine(),
+	}, nil
+}
+
+// ─── 输出 ─────────────────────────────────────────────────
+
+func printDiagnosis(d *fixer.DiagnosisResult) {
+	fmt.Printf("  Classification: %s", d.Classification.Type)
+	if d.Classification.Reason != "" {
+		fmt.Printf(" (%s)", d.Classification.Reason)
+	}
+	fmt.Println()
+
+	if d.IsDegraded {
+		fmt.Println("  ⚠️  Degraded mode (LLM unavailable)")
+	}
+	if d.Error != "" {
+		fmt.Printf("  ⚠️  %s\n", d.Error)
+	}
+
+	if len(d.MatchedSeeds) > 0 {
+		fmt.Printf("  Matched %d similar incidents:\n", len(d.MatchedSeeds))
+		for _, m := range d.MatchedSeeds {
+			fmt.Printf("    • %s [%s] (score: %.2f)\n",
+				m.Seed.Title, m.Seed.Category, m.Score)
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("  🔍 Root Cause: %s\n", d.RootCause)
+	fmt.Printf("  📝 Fix Plan:   %s\n", d.FixPlan)
+
+	if d.SuggestedFix != nil {
+		fmt.Printf("  🔧 Suggested Fix: %s\n", d.SuggestedFix.Description)
+		if len(d.SuggestedFix.ConfigOverride) > 0 {
+			overrideJSON, _ := json.MarshalIndent(d.SuggestedFix.ConfigOverride, "     ", "  ")
+			fmt.Printf("     Config Override: %s\n", string(overrideJSON))
+		}
+	}
+
+	if d.LLMUsage != nil {
+		fmt.Printf("  📊 LLM tokens: %d prompt + %d completion = %d total\n",
+			d.LLMUsage.PromptTokens, d.LLMUsage.CompletionTokens, d.LLMUsage.TotalTokens)
+	}
+}
+
+// ─── 辅助函数 ─────────────────────────────────────────────
 
 func initLogger() {
 	level := slog.LevelInfo
@@ -187,9 +427,10 @@ func printResult(r *internalpipeline.PipelineResult) {
 	for _, sr := range r.StepResults {
 		icon := "✅"
 		statusStr := string(sr.Status)
-		if sr.Status == internalpipeline.StatusFailed {
+		switch sr.Status {
+		case internalpipeline.StatusFailed:
 			icon = "❌"
-		} else if sr.Status == internalpipeline.StatusSkipped {
+		case internalpipeline.StatusSkipped:
 			icon = "⏭️"
 		}
 
@@ -203,14 +444,14 @@ func printResult(r *internalpipeline.PipelineResult) {
 		if sr.Error != "" {
 			fmt.Printf("     Error:    %s\n", sr.Error)
 		}
-		if sr.Status == internalpipeline.StatusFailed && sr.RawLog != "" {
-			fmt.Println("     ─── Output ───")
+		if sr.RawLog != "" {
+			fmt.Println("     --- Output ---")
 			for _, line := range strings.Split(sr.RawLog, "\n") {
 				if trimmed := strings.TrimSpace(line); trimmed != "" {
 					fmt.Printf("     | %s\n", trimmed)
 				}
 			}
-			fmt.Println("     ─────────────")
+			fmt.Println("     --------------")
 		}
 	}
 

@@ -1,0 +1,68 @@
+# miniflow RAG 种子案例 — 应用代码错误
+- id: "app-001"
+  category: "app_code"
+  title: "应用 Panic"
+  match_pattern:
+    - "panic:"
+    - "fatal error:"
+    - "goroutine "
+  raw_log_example: |
+    panic: runtime error: invalid memory address or nil pointer dereference
+    [signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x12345]
+
+    goroutine 1 [running]:
+    main.main()
+        /app/main.go:42 +0x123
+  sanitized_log: |
+    panic: runtime error: invalid memory address or nil pointer dereference
+    goroutine *** [running]:
+    main.main()
+        ***/main.go:*** +0x***
+  root_cause: "应用程序代码 panic 或遇到致命错误。需要修复源代码。"
+  fix_suggestion:
+    description: "检查 panic 位置的源代码。检查空指针解引用、越界访问或断言失败。"
+
+- id: "app-002"
+  category: "app_code"
+  title: "测试失败"
+  match_pattern:
+    - "FAIL"
+    - "tests failed"
+    - "test failed"
+    - "exit status 1"
+  raw_log_example: |
+    --- FAIL: TestParseConfig (0.01s)
+        config_test.go:25: expected nil, got error: unexpected field
+    FAIL
+    exit status 1
+  sanitized_log: |
+    --- FAIL: TestParseConfig (0.01s)
+        config_test.go:***: expected nil, got error: unexpected field
+    FAIL
+    exit status 1
+  root_cause: "测试步骤中一个或多个测试失败。测试输出应指示哪些测试失败及原因。"
+  fix_suggestion:
+    description: "检查测试输出以识别失败测试。检查断言失败、编译错误或依赖问题。"
+
+- id: "app-003"
+  category: "app_code"
+  title: "编译错误"
+  match_pattern:
+    - "compilation error"
+    - "cannot find package"
+    - "undefined:"
+    - "expected declaration"
+    - "cannot find module"
+  raw_log_example: |
+    main.go:5:2: cannot find package "github.com/example/pkg" in any of:
+        /usr/local/go/src/github.com/example/pkg
+        /app/vendor/github.com/example/pkg
+  sanitized_log: |
+    main.go:***:2: cannot find package "***/example/pkg"
+  root_cause: "依赖包未找到或模块未正确下载。可能是 go mod tidy 未运行或私有仓库认证问题。"
+  fix_suggestion:
+    description: "运行 go mod tidy 下载依赖，或在流水线中添加依赖下载步骤"
+    config_override_example:
+      commands:
+        - "go mod download"
+        - "go build ./..."

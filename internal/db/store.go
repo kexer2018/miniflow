@@ -31,10 +31,34 @@ type Store interface {
 	// GetExecContext 获取执行上下文。
 	GetExecContext(ctx context.Context, pipelineID string) (*pipeline.ExecContext, error)
 
+	// ─── 诊断历史 ──────────────────────────────────────
+	// SaveDiagnosis 保存一次 AI 诊断记录。
+	SaveDiagnosis(ctx context.Context, record *DiagnosisRecord) error
+
+	// ListDiagnoses 列出最近的诊断记录。
+	ListDiagnoses(ctx context.Context, limit, offset int) ([]*DiagnosisRecord, error)
+
 	// ─── 健康检查 ──────────────────────────────────────
 	// Ping 检查数据库连接是否正常。
 	Ping(ctx context.Context) error
 
 	// Close 关闭数据库连接。
 	Close() error
+}
+
+// ─── 诊断记录 ─────────────────────────────────────────────
+
+// DiagnosisRecord 保存一次 AI 诊断的历史记录。
+// 用于诊断回顾和动态 RAG 积累。
+type DiagnosisRecord struct {
+	PipelineID     string  `json:"pipeline_id"`
+	StepName       string  `json:"step_name"`
+	ClassificationType   string `json:"classification_type"`
+	ClassificationReason string `json:"classification_reason"`
+	RootCause      string  `json:"root_cause"`
+	FixPlan        string  `json:"fix_plan"`
+	Confidence     float64 `json:"confidence"`
+	Category       string  `json:"category"`
+	DiagnosisJSON  string  `json:"diagnosis_json,omitempty"` // 完整诊断结果的 JSON 快照
+	CreatedAt      int64   `json:"created_at"`
 }

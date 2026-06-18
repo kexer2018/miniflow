@@ -81,10 +81,10 @@ func (s *SQLiteStore) GetPipelineResult(ctx context.Context, id string) (*pipeli
 	row := s.db.QueryRowContext(ctx, query, id)
 
 	var (
-		result           pipeline.PipelineResult
-		stepResultsJSON  string
-		startedAtUnix    int64
-		finishedAtUnix   int64
+		result          pipeline.PipelineResult
+		stepResultsJSON string
+		startedAtUnix   int64
+		finishedAtUnix  int64
 	)
 
 	err := row.Scan(
@@ -208,6 +208,84 @@ func (s *SQLiteStore) GetExecContext(ctx context.Context, pipelineID string) (*p
 	return ec, nil
 }
 
+// ─── 诊断历史 ─────────────────────────────────────────────
+
+func (s *SQLiteStore) SaveDiagnosis(ctx context.Context, record *DiagnosisRecord) error {
+	query := `INSERT INTO diagnosis_history
+		(pipeline_id, step_name, classification_type, classification_reason,
+		 root_cause, fix_plan, confidence, category, diagnosis_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	now := time.Now().Unix()
+
+	_, err := s.db.ExecContext(ctx, query,
+		record.PipelineID,
+		record.StepName,
+		record.ClassificationType,
+		record.ClassificationReason,
+		record.RootCause,
+		record.FixPlan,
+		record.Confidence,
+		record.Category,
+		record.DiagnosisJSON,
+		now,
+	)
+	if err != nil {
+		return fmt.Errorf("save diagnosis: %w", err)
+	}
+
+	return nil
+}
+
+func (s *SQLiteStore) ListDiagnoses(ctx context.Context, limit, offset int) ([]*DiagnosisRecord, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	query := `SELECT pipeline_id, step_name, classification_type, classification_reason,
+		root_cause, fix_plan, confidence, category, diagnosis_json, created_at
+		FROM diagnosis_history ORDER BY created_at DESC LIMIT ? OFFSET ?`
+
+	rows, err := s.db.QueryContext(ctx, query, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("query diagnoses: %w", err)
+	}
+	defer rows.Close()
+
+	var records []*DiagnosisRecord
+	for rows.Next() {
+		var r DiagnosisRecord
+		if err := rows.Scan(
+			&r.PipelineID,
+			&r.StepName,
+			&r.ClassificationType,
+			&r.ClassificationReason,
+			&r.RootCause,
+			&r.FixPlan,
+			&r.Confidence,
+			&r.Category,
+			&r.DiagnosisJSON,
+			&r.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan diagnosis: %w", err)
+		}
+		records = append(records, &r)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration: %w", err)
+	}
+
+	if records == nil {
+		records = make([]*DiagnosisRecord, 0)
+	}
+
+	return records, nil
+}
+
 func (s *SQLiteStore) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
@@ -239,6 +317,23 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			cache_dir TEXT NOT NULL DEFAULT '',
 			updated_at INTEGER NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS diagnosis_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			pipeline_id TEXT NOT NULL DEFAULT '',
+			step_name TEXT NOT NULL DEFAULT '',
+			classification_type TEXT NOT NULL DEFAULT '',
+			classification_reason TEXT NOT NULL DEFAULT '',
+			root_cause TEXT NOT NULL DEFAULT '',
+			fix_plan TEXT NOT NULL DEFAULT '',
+			confidence REAL NOT NULL DEFAULT 0.0,
+			category TEXT NOT NULL DEFAULT '',
+			diagnosis_json TEXT NOT NULL DEFAULT '{}',
+			created_at INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_diagnosis_created_at
+			ON diagnosis_history(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_diagnosis_pipeline
+			ON diagnosis_history(pipeline_id)`,
 	}
 
 	for _, stmt := range statements {

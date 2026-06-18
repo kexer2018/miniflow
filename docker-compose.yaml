@@ -1,0 +1,79 @@
+# miniflow — AI-Native CI/CD Execution Engine
+#
+# 启动 worker 守护进程：
+#   docker compose up -d
+#
+# 在 worker 容器内执行一次性流水线：
+#   docker compose exec miniflow miniflow -f /workspace/pipeline.json
+#
+# 使用自定义配置文件：
+#   cp .miniflow.example.json .miniflow.json
+#   # 编辑 .miniflow.json 填入真实 LLM_API_KEY
+#   docker compose up -d
+#
+# 通过环境变量传递 LLM 配置（覆盖配置文件）：
+#   LLM_API_KEY=sk-xxx docker compose up -d
+
+services:
+  # ─── Worker 守护进程 ────────────────────────────────
+  # 当前 Phase 1: 仅为骨架，等待控制面下发任务
+  # Phase 2: 将在此容器内启动 REST/gRPC 服务监听 :9090
+  miniflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: miniflow-worker
+    hostname: miniflow-worker
+
+    # ─── 卷挂载 ─────────────────────────────────────
+    volumes:
+      # Docker 套接字（必需：Worker 需调度容器）
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+      # 工作空间持久化（流水线中间产物）
+      - miniflow-workspaces:/tmp/miniflow/workspaces
+
+      # SQLite 数据库持久化（执行历史、诊断记录）
+      - miniflow-data:/tmp/miniflow/data
+
+      # 配置文件（可选）
+      - ./.miniflow.json:/root/.miniflow.json:ro
+
+    # ─── 环境变量 ───────────────────────────────────
+    # 优先级：环境变量 > 配置文件 > 代码默认值
+    # LLM_API_KEY 建议放在 .env 文件或 docker compose 命令行
+    environment:
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+
+    # ─── 网络 ───────────────────────────────────────
+    ports:
+      - "9090:9090"
+
+    # ─── Worker 配置 ─────────────────────────────────
+    command:
+      - "--listen=:9090"
+      - "--verbose"
+
+    # ─── 健康检查 ───────────────────────────────────
+    healthcheck:
+      test: ["CMD", "miniflow", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # ─── 系统配置 ───────────────────────────────────
+    # 需要特权模式来挂载 Docker socket（部分环境要求）
+    # 如果不需要，可移除
+    # privileged: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+# ─── 持久卷 ────────────────────────────────────────────
+volumes:
+  miniflow-workspaces:
+    name: miniflow-workspaces
+  miniflow-data:
+    name: miniflow-data
