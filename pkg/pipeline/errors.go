@@ -21,3 +21,13 @@ func ErrStepImageEmpty(name string) error {
 func ErrStepNoCommands(name string) error {
 	return fmt.Errorf("step %q has no commands", name)
 }
+
+var (
+	ErrSourceNoRepo       = fmt.Errorf("source.repository is required when source is specified")
+	ErrCredFileNotFound   = fmt.Errorf("credentials file not found")
+	ErrCredFilePerm       = fmt.Errorf("credentials file permissions not 0600")
+	ErrCredentialNotFound = fmt.Errorf("no credential found for secret")
+	ErrCheckoutFailed     = fmt.Errorf("source checkout failed")
+	ErrEnvInvalidFormat   = fmt.Errorf("environment variable has invalid format")
+	ErrSecretNotResolved  = fmt.Errorf("secret referenced but not found in credentials")
+)
