@@ -20,6 +20,7 @@ type StepSpec struct {
 	DependsOn []string `json:"depends_on,omitempty"` // 依赖的步骤名称列表
 	Cache     *Cache   `json:"cache,omitempty"`      // 缓存挂载策略
 	Env       []string `json:"env,omitempty"`        // 环境变量（K=V 格式）
+	Timeout   int      `json:"timeout,omitempty"`    // 步骤超时时间（秒），0 表示不限制
 }
 
 // Cache 定义缓存挂载策略。

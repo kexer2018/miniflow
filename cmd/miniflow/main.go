@@ -9,6 +9,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"time"
+
 	"syscall"
 
 	"github.com/google/uuid"
@@ -392,6 +394,7 @@ func convertSteps(specSteps []pipelinespec.StepSpec) []internalpipeline.Step {
 			Commands:  s.Commands,
 			DependsOn: s.DependsOn,
 			Env:       s.Env,
+			Timeout:   time.Duration(s.Timeout) * time.Second,
 		}
 		if s.Cache != nil {
 			step.Cache = &internalpipeline.Cache{

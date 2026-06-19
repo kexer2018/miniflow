@@ -21,13 +21,14 @@ type Pipeline struct {
 
 // Step 表示流水线中的一个执行步骤。
 type Step struct {
-	Name      string   `json:"name"`
-	Image     string   `json:"image"`
-	Commands  []string `json:"commands"`
-	DependsOn []string `json:"depends_on,omitempty"`
-	Cache     *Cache   `json:"cache,omitempty"`
-	Env       []string `json:"env,omitempty"`
-	Entrypoint []string `json:"entrypoint,omitempty"`
+	Name      string          `json:"name"`
+	Image     string          `json:"image"`
+	Commands  []string        `json:"commands"`
+	DependsOn []string        `json:"depends_on,omitempty"`
+	Cache     *Cache          `json:"cache,omitempty"`
+	Env       []string        `json:"env,omitempty"`
+	Entrypoint []string       `json:"entrypoint,omitempty"`
+	Timeout   time.Duration   `json:"-"` // 步骤超时，0 表示不限制（从 spec 的秒数转换）
 }
 
 // Cache 定义步骤级别的缓存挂载策略。

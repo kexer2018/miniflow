@@ -151,7 +151,14 @@ func (e *Executor) ExecutePipeline(ctx context.Context, p *Pipeline) *PipelineRe
 
 // executeStep 执行单个 Step。
 func (e *Executor) executeStep(ctx context.Context, step Step, wsPath, _ string) StepResult {
-	slog.Debug("executing step", "name", step.Name, "image", step.Image)
+	slog.Debug("executing step", "name", step.Name, "image", step.Image, "timeout", step.Timeout)
+
+	// 如果步骤配置了超时，创建带超时的 context
+	if step.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, step.Timeout)
+		defer cancel()
+	}
 
 	startedAt := time.Now()
 

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // ─── Environment Variables ───────────────────────────────
@@ -116,7 +117,9 @@ func NewOpenAIClient() *OpenAIClient {
 		apiKey:     apiKey,
 		baseURL:    baseURL,
 		model:      model,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{
+			Timeout: 120 * time.Second,
+		},
 	}
 }
 
@@ -126,7 +129,9 @@ func NewOpenAIClientWithConfig(apiKey, baseURL, model string) *OpenAIClient {
 		apiKey:     apiKey,
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		model:      model,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{
+			Timeout: 120 * time.Second,
+		},
 	}
 }
 

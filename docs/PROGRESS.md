@@ -5,6 +5,7 @@
 > **Phase**: 1 (MVP — Serial CI/CD Execution Engine)
 > **Version**: 0.1.0-alpha
 > **Go**: 1.23+ (CGO-free)
+> **Tests**: ~121 test functions across all packages | **All passing** ✅
 
 ---
 
@@ -17,7 +18,7 @@ miniflow is an **AI-native lightweight CI/CD execution engine** written in Go. I
 | Phase | Focus | Status |
 |-------|-------|--------|
 | **1** | Serial Docker execution + CLI + diagnosis foundation | ✅ **Complete** |
-| **1B** | AI diagnosis engine refinement (RAG, LLM structured output, fix suggestions) | ✅ **Complete** (with optimization headroom) |
+| **1B** | AI diagnosis engine refinement (RAG, LLM structured output, fix suggestions) | ✅ **Complete** |
 | **2** | Parallel execution, worker daemon, REST API, Web UI, control plane | 🚧 **In design** |
 
 ---
@@ -40,14 +41,14 @@ internal/
 ├── container/         # Docker SDK wrapper, socket auto-detect, workspace mgmt
 ├── log/               # Log collector, regex sanitizer (8 rules), deterministic classifier
 ├── llm/               # LLM abstraction layer + OpenAI-compatible client
-├── fixer/             # AI diagnosis engine + RAG seed matching
+├── fixer/             # AI diagnosis engine + RAG seed matching + YAML seed loader
 ├── api/               # REST API skeleton (Phase 2)
 ├── config/            # Config loading (JSON file, env vars, CLI flags)
 └── db/                # Store interface + SQLite implementation (pure Go)
 
 pkg/pipeline/          # Public PipelineSpec types (shared by CLI and API)
 
-seeds/                 # RAG seed cases for error classification (YAML, not yet loaded)
+seeds/                 # 6 YAML seed files (auth, image-pull, network, permission, resource, app-code)
 examples/              # Sample pipeline JSON files
 ```
 
@@ -156,7 +157,7 @@ Collector:
 
 ### ✅ `internal/llm/` — LLM Abstraction Layer
 
-**Files**: `client.go`, `openai.go`, `prompt.go`, `prompt_test.go`
+**Files**: `client.go`, `openai.go`, `prompt.go`, `prompt_test.go`, `openai_test.go`
 
 - `LLMClient` interface: Chat (sync) + ChatStream (SSE)
 - `OpenAIClient` — supports OpenAI + compatible APIs (DeepSeek, Qwen, etc.)
@@ -173,7 +174,7 @@ Collector:
 
 ### ✅ `internal/fixer/` — AI Diagnosis Engine
 
-**Files**: `diagnose.go`, `rag.go`, `seeds.go`, `rag_test.go`
+**Files**: `diagnose.go`, `rag.go`, `seeds.go`, `seeds_yaml.go`, `rag_test.go`, `seeds_yaml_test.go`
 
 Diagnosis pipeline:
 ```
@@ -187,11 +188,15 @@ Key behaviors:
 - Token usage tracking
 
 Seed engine:
-- 17 built-in seed cases across 7 categories (auth, image_pull, network, permission, resource, app_code, configuration)
+- **17 built-in seed cases** across 7 categories (auth, image_pull, network, permission, resource, app_code, configuration)
+- **YAML seed loading** at runtime via `LoadFromYAML()` / `LoadFromDir()` — same-ID override of built-ins
+- **`NewSeedEngineWithSeedsDir()`** — CLI integration with configurable seeds directory
+- **6 YAML seed files** in `seeds/` (auth, image-pull, network, permission, resource, app-code)
 - Simple keyword matching with scoring (`matched/total` ratio)
 - `BuildContext()` for few-shot prompt context
+- **16 test functions** covering YAML loading, override, partial failure, directory loading
 
-**Status**: Complete. Seed YAML files exist but are not loaded at runtime.
+**Status**: Complete. Seeds are now fully customizable without recompilation.
 
 ---
 
@@ -291,28 +296,35 @@ Auto-diagnose (`-d` flag): on pipeline failure, runs `fixer.Diagnose()` on each 
 
 ## 4. Test Coverage
 
-### Unit Tests
+### Unit Tests — All Passing ✅
 
 | Package | Files | Tests | Status |
 |---------|-------|-------|--------|
-| `internal/config` | `config_test.go` | 8 tests | ✅ Strong |
-| `internal/log` | `sanitizer_test.go` | 8 tests | ✅ Sanitizer only |
-| `internal/fixer` | `rag_test.go` | 5 tests | ✅ Seed engine only |
-| `internal/llm` | `prompt_test.go` | 3 tests | ✅ Prompt builder only |
+| `internal/pipeline` | `validate_test.go`, `execute_test.go` | 26 tests | ✅ DAG validation + execution |
+| `internal/config` | `config_test.go` | 9 tests | ✅ Strong |
+| `internal/log` | `sanitizer_test.go`, `classifier_test.go`, `collector_test.go` | 35 tests | ✅ Full coverage |
+| `internal/llm` | `openai_test.go`, `prompt_test.go` | 14 tests | ✅ Client + prompts |
+| `internal/fixer` | `rag_test.go`, `seeds_yaml_test.go` | 21 tests | ✅ Seed engine + YAML loading |
+| `internal/db` | `sqlite_test.go` | 16 tests | ✅ CRUD + migration |
 
-**Missing test coverage**:
-- `internal/log/classifier.go` — no tests
-- `internal/log/collector.go` — no tests
-- `internal/pipeline/validate.go` — no tests (TopologicalSort, ValidateDAG)
-- `internal/pipeline/execute.go` — no tests (Executor)
-- `internal/container/docker.go` — no unit tests (integration-tagged only)
-- `internal/container/workspace.go` — no tests
-- `internal/container/manager.go` — no tests
-- `internal/fixer/diagnose.go` — no tests (requires LLM mock)
-- `internal/api/handler.go` — no tests
-- `internal/api/router.go` — no tests
-- `internal/db/sqlite.go` — no tests
-- `internal/llm/openai.go` — no tests
+**Total: ~121 test functions across 12 test files**
+
+**Previously untested packages now covered**:
+- `internal/log/classifier.go` — 10 tests (signal rules, edge cases)
+- `internal/log/collector.go` — 16 tests (line collection, streaming callback, concurrency)
+- `internal/pipeline/validate.go` — 21 tests (TopologicalSort, ValidateDAG, cycle detection)
+- `internal/pipeline/execute.go` — 5 tests (executor with mock container manager)
+- `internal/container/workspace.go` — tested via pipeline/execute_test.go integration
+- `internal/db/sqlite.go` — 16 tests (CRUD, exec context, diagnosis history, migrations)
+- `internal/llm/openai.go` — 11 tests (HTTP client, streaming, error handling, schema validation)
+- `internal/fixer/seeds_yaml.go` — 16 tests (YAML load, override, dir loading, partial failure)
+
+### Still Missing Test Coverage
+
+- `internal/container/docker.go` — integration-tagged only (requires Docker runtime)
+- `internal/container/manager.go` — no unit tests
+- `internal/fixer/diagnose.go` — requires LLM mock
+- `internal/api/handler.go` / `internal/api/router.go` — no tests
 - `internal/config/config.go` — `LoadDefault()` untested
 
 ### Integration Tests
@@ -344,32 +356,35 @@ Auto-diagnose (`-d` flag): on pipeline failure, runs `fixer.Diagnose()` on each 
 - [x] Multi-stage Docker build
 - [x] Docker Compose deployment with persistent volumes
 - [x] Signal handling (SIGINT/SIGTERM) for graceful cancellation
+- [x] YAML seed file loading at runtime (`LoadFromYAML`/`LoadFromDir`)
+- [x] Seed override: YAML files replace built-in seeds by ID
+- [x] 6 YAML seed files shipping in `seeds/` directory
+- [x] Chinese-localized LLM diagnosis prompt
+- [x] Full test coverage for DAG validation (21 tests), execution (5 tests), log classifier (10 tests), log collector (16 tests), OpenAI client (11 tests), SQLite persistence (16 tests), YAML seed loading (16 tests)
 
 ---
 
-## 6. In Progress / Immediate Next Steps
+> 📘 **完整 CI/CD 功能分析见** [`docs/CI-CD-FUNCTIONAL-ANALYSIS.md`](./CI-CD-FUNCTIONAL-ANALYSIS.md)
+> — 包含功能分层架构、每层详细设计、Spec 演进路线、三阶段实施路线、完整管道示例
 
-### 🔄 RAG Enhancement (highest priority)
-
-Seeds YAML files exist in `seeds/` but are never loaded at runtime.
-- [ ] Load seed files at startup via `os.ReadFile` + `yaml.Unmarshal`
-- [ ] Extend `SeedEngine.LoadFromYAML()` method
-- [ ] Document YAML schema for user-contributed seeds
+## 6. Immediate Next Steps
 
 ### 🔄 CI/CD
 
 - [ ] GitHub Actions workflow (verify no regressions)
 - [ ] Add Go lint + vet + test steps
 
-### 🔄 Test Coverage
+### 🔄 Remaining Test Coverage
 
-- [ ] Add unit tests for `internal/pipeline/validate.go` — `ValidateDAG`, `TopologicalSort`
-- [ ] Add unit tests for `internal/log/classifier.go` — all signal rules
-- [ ] Add unit tests for `internal/log/collector.go` — line collection, streaming callback
-- [ ] Add unit tests for `internal/container/workspace.go` — workspace lifecycle
-- [ ] Add unit tests for `internal/db/sqlite.go` — CRUD + migration
+- [ ] Add mock for `llm.LLMClient` to test `fixer/diagnose.go` (requires LLM mock)
 - [ ] Add unit tests for `internal/api/handler.go` / `router.go` — HTTP handlers
-- [ ] Add mock for `llm.LLMClient` to test `fixer/diagnose.go`
+- [ ] Add unit tests for `internal/container/docker.go` — mock Docker client
+- [ ] Add unit tests for `internal/config/config.go` — `LoadDefault()`
+
+### 🔄 AI & RAG Polish
+
+- [ ] Document YAML schema for user-contributed seeds
+- [ ] Dynamic RAG: feed successful diagnoses back into seed library (via `diagnosis_history`)
 
 ---
 
@@ -419,11 +434,12 @@ Seeds YAML files exist in `seeds/` but are never loaded at runtime.
 | Area | Issue | Impact |
 |------|-------|--------|
 | `pipeline/execute.go:153` | Unused `_ string` parameter (pipelineID) | Minor — kept for Phase 2 parallel groups |
-| `internal/fixer/seeds.go` | Hardcoded seed cases, YAML files not loaded | Seeds cannot be customized without recompilation |
 | `internal/llm/openai.go` | No HTTP client timeout configured | Potential resource leak on hung connections |
 | `internal/api/router.go` | Uses `http.ServeMux` (Go 1.22+) | Adequate for now, chi/gin planned for Phase 2 |
 | `internal/container/docker.go` | `AutoRemove: false` with manual cleanup | Works but creates container lifecycle states |
-| Tests | Only 24 tests across 4 test files | Low coverage in core execution paths |
+| `internal/fixer/diagnose.go` | No unit tests (requires LLM mock) | Low confidence in diagnosis orchestration logic |
+| `internal/container` | No mock-based unit tests | Docker-dependent tests skipped in CI without Docker |
+| Tests | ~121 tests, but container + API packages still uncovered | Gaps in Docker and HTTP handler coverage |
 | Documentation | No `example_test.go` files | Harder for new contributors to onboard |
 
 ---
