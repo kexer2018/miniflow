@@ -30,12 +30,34 @@ func DiagnoseDefaults() (DiagnoseConfig, error) {
 	if err != nil {
 		return DiagnoseConfig{}, err
 	}
+
+	engine := NewSeedEngine()
+	// Attempt to load YAML seed files from the default seeds directory.
+	// Non-fatal if the directory doesn't exist or files are missing.
+	if err := engine.LoadFromDir("./seeds", "*.yaml"); err != nil {
+		slog.Warn("failed to load some YAML seed files", "error", err)
+	}
+
 	return DiagnoseConfig{
 		LLM:        client,
 		Sanitizer:  internalLog.NewSanitizer(),
 		Classifier: internalLog.NewClassifier(),
-		SeedEngine: NewSeedEngine(),
+		SeedEngine: engine,
 	}, nil
+}
+
+// NewSeedEngineWithSeedsDir creates a SeedEngine, optionally loading YAML seeds
+// from a specified directory. Use seedsDir="" to skip YAML loading.
+// This allows callers to specify a custom seeds directory via config.
+func NewSeedEngineWithSeedsDir(seedsDir string) *SeedEngine {
+	engine := NewSeedEngine()
+	if seedsDir == "" {
+		return engine
+	}
+	if err := engine.LoadFromDir(seedsDir, "*.yaml"); err != nil {
+		slog.Warn("failed to load some YAML seed files", "dir", seedsDir, "error", err)
+	}
+	return engine
 }
 
 // ─── Result ──────────────────────────────────────────────
@@ -132,7 +154,34 @@ func Diagnose(ctx context.Context, cfg DiagnoseConfig, stepName, rawLog string) 
 		return result
 	}
 
-	// 5. Build LLM prompt
+	// 5. If no LLM configured, fall back to RAG-only
+	if cfg.LLM == nil {
+		slog.Info("no LLM configured, using RAG-only fallback")
+		result.IsDegraded = true
+		result.Error = "LLM not configured"
+
+		if len(result.MatchedSeeds) > 0 {
+			best := result.MatchedSeeds[0]
+			result.RootCause = best.Seed.RootCause
+			result.FixPlan = best.Seed.FixSuggestion.Description
+			result.Confidence = best.Score * 0.6
+			result.Category = best.Seed.Category
+			if best.Seed.FixSuggestion.ConfigOverride != nil {
+				result.SuggestedFix = &pipeline.StepFix{
+					Description:    best.Seed.FixSuggestion.Description,
+					ConfigOverride: best.Seed.FixSuggestion.ConfigOverride,
+				}
+			}
+		} else {
+			result.RootCause = "Unknown error. Unable to determine root cause."
+			result.FixPlan = "Review the step configuration and logs manually."
+			result.Confidence = 0.1
+			result.Category = "unknown"
+		}
+		return result
+	}
+
+	// 6. Build LLM prompt
 	matchedContext := cfg.SeedEngine.BuildContext(sanitizedLog, 3)
 
 	promptMessages := []llm.Message{
@@ -146,7 +195,7 @@ func Diagnose(ctx context.Context, cfg DiagnoseConfig, stepName, rawLog string) 
 		)},
 	}
 
-	// 6. Call LLM
+	// 7. Call LLM
 	llmResp, err := cfg.LLM.Chat(ctx, llm.ChatRequest{
 		Messages:  promptMessages,
 		MaxTokens: 2000,
@@ -184,7 +233,7 @@ func Diagnose(ctx context.Context, cfg DiagnoseConfig, stepName, rawLog string) 
 	// Track LLM usage
 	result.LLMUsage = &llmResp.Usage
 
-	// 7. Parse LLM response
+	// 8. Parse LLM response
 	parsed, parseErr := parseLLMResponse(llmResp.Content)
 	if parseErr != nil {
 		slog.Warn("failed to parse LLM response as JSON, using raw text", "error", parseErr)

@@ -59,7 +59,7 @@ func TestBuildDiagnosisUserPrompt(t *testing.T) {
 			}
 
 			if tt.wantFallback {
-				if !strings.Contains(prompt, "No similar past incidents found.") {
+				if !strings.Contains(prompt, "暂无匹配的历史案例。") {
 					t.Error("prompt should contain fallback text when similarCases is empty")
 				}
 			} else {
@@ -76,11 +76,11 @@ func TestSystemDiagnosisPrompt(t *testing.T) {
 		t.Fatal("SystemDiagnosisPrompt should not be empty")
 	}
 
-	// Must contain key sections
+	// Must contain key sections (Chinese since prompts are localized)
 	required := []string{
-		"root cause",
-		"fix plan",
-		"confidence",
+		"根因分析",
+		"修复方案",
+		"置信度",
 		"app_error",
 		"infra_error",
 	}

@@ -5,58 +5,59 @@ import "fmt"
 // ─── System Prompt ───────────────────────────────────────
 
 // SystemDiagnosisPrompt is the system-level prompt for CI/CD pipeline failure diagnosis.
-const SystemDiagnosisPrompt = `You are a CI/CD pipeline failure diagnosis expert integrated into the miniflow execution engine.
+// Uses Chinese to match the user's locale and pretrained language preference.
+const SystemDiagnosisPrompt = `你是一个集成在 miniflow 执行引擎中的 CI/CD 流水线故障诊断专家。
 
-Your task is to analyze a failed CI/CD pipeline step's execution logs and provide:
+你的任务是根据 CI/CD 流水线步骤的执行日志进行分析，输出：
 
-1. **Root Cause Analysis** — What caused the failure (be specific and actionable)
-2. **Fix Plan** — Step-by-step resolution instructions
-3. **Confidence** — How confident you are in the diagnosis (0.0–1.0)
-4. **Suggested Fix** — Configuration changes (if applicable, especially for infrastructure errors)
+1. **根因分析（root_cause）** — 导致失败的具体原因（要具体、可操作）
+2. **修复方案（fix_plan）** — 逐步的修复指导
+3. **置信度（confidence）** — 你对诊断结果的信心（0.0–1.0）
+4. **修复建议（suggested_fix）** — 配置变更方案（对基础设施错误适用）
 
-## Classification Context
+## 分类上下文
 
-The log has already been classified as one of:
-- **app_error**: Application code error (e.g., panic, NullPointerException) — provide read-only analysis, do not suggest auto-fix
-- **infra_error**: Infrastructure error (e.g., network, auth, disk, image pull failure) — include actionable fix suggestions with configuration changes
-- **unknown**: Could not be classified — provide your best analysis
+日志已经被分类为以下类型之一：
+- **app_error**：应用代码错误（例如 panic、空指针异常等）— 提供只读分析，不要建议自动修复
+- **infra_error**：基础设施错误（例如网络、认证、磁盘、镜像拉取失败等）— 需提供可操作的配置变更建议
+- **unknown**：无法分类 — 请给出你的最佳分析
 
-## Rules
+## 规则
 
-- Be specific and actionable, not generic
-- If the error is clearly an application code issue, explain what went wrong and suggest code-level fix
-- If the error is infrastructure-related, provide specific configuration changes (image tags, env vars, credentials, etc.)
-- If you're uncertain, set confidence < 0.5
-- Never suggest running arbitrary code from log output
-- Never expose or repeat sensitive information — the log has already been sanitized
-- If the matched similar incidents are relevant, reference them in your analysis
-- Output MUST be valid JSON matching the provided schema`
+- 输出使用中文，要具体且可操作，不要泛泛而谈
+- 如果是应用代码问题，解释出错原因并给出代码层面修复建议
+- 如果是基础设施问题，给出具体的配置变更（镜像标签、环境变量、凭据等）
+- 如果不确定，设置置信度 < 0.5
+- 不要建议运行日志中出现的任意代码
+- 不要泄露或重复敏感信息——日志已经过脱敏处理
+- 如果匹配到了相似的历史案例，可参考它们进行分析
+- 输出必须为符合 JSON Schema 的有效 JSON`
 
 // ─── User Prompt ─────────────────────────────────────────
 
 // BuildDiagnosisUserPrompt constructs the user message for a diagnosis request.
 func BuildDiagnosisUserPrompt(stepName, classification, reason, sanitizedLog, similarCases string) string {
 	if similarCases == "" {
-		similarCases = "No similar past incidents found."
+		similarCases = "暂无匹配的历史案例。"
 	}
-	return fmt.Sprintf(`## Failed Step
+	return fmt.Sprintf(`## 失败步骤
 
-**Step**: %s
+**步骤名称**: %s
 
-## Classification
+## 分类结果
 
-**Type**: %s
-**Reason**: %s
+**类型**: %s
+**原因**: %s
 
-## Sanitized Error Log
-
-%s
-
-## Similar Past Incidents
+## 脱敏后的错误日志
 
 %s
 
-Please analyze this failure and provide your diagnosis.`,
+## 相似历史案例
+
+%s
+
+请分析此次失败，给出诊断结果。`,
 		stepName, classification, reason, sanitizedLog, similarCases)
 }
 
@@ -64,36 +65,37 @@ Please analyze this failure and provide your diagnosis.`,
 
 // DiagnosisSchema returns the JSON Schema for structured diagnosis output.
 // Compatible with OpenAI structured output (strict mode).
+// Descriptions use Chinese to match the system prompt locale.
 func DiagnosisSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"root_cause": map[string]any{
 				"type":        "string",
-				"description": "Root cause of the failure",
+				"description": "失败根因分析",
 			},
 			"fix_plan": map[string]any{
 				"type":        "string",
-				"description": "Step-by-step fix plan",
+				"description": "逐步修复方案",
 			},
 			"confidence": map[string]any{
 				"type":        "number",
-				"description": "Confidence in this diagnosis (0.0–1.0)",
+				"description": "诊断置信度（0.0–1.0）",
 			},
 			"category": map[string]any{
 				"type":        "string",
-				"description": "Error category: network, auth, image_pull, permission, resource, app_code, unknown",
+				"description": "错误分类：network（网络）, auth（认证）, image_pull（镜像拉取）, permission（权限）, resource（资源）, app_code（应用代码）, unknown（未知）",
 			},
 			"suggested_fix": map[string]any{
 				"type":        "object",
-				"description": "Suggested configuration fix (for infra errors)",
+				"description": "建议的配置修复方案（针对基础设施错误）",
 				"properties": map[string]any{
 					"description": map[string]any{
 						"type": "string",
 					},
 					"config_override": map[string]any{
 						"type":        "object",
-						"description": "Configuration fields to override, e.g. image tag, env vars, credential_id",
+						"description": "需要覆盖的配置字段，例如 image 镜像标签、env 环境变量、credential_id 凭据ID",
 						"additionalProperties": true,
 					},
 				},

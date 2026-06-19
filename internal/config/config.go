@@ -30,6 +30,7 @@ import (
 type Config struct {
 	LLM       *LLMConfig       `json:"llm,omitempty"`
 	Workspace *WorkspaceConfig `json:"workspace,omitempty"`
+	Seeds     *SeedsConfig     `json:"seeds,omitempty"`
 }
 
 // LLMConfig configures the LLM client.
@@ -42,6 +43,12 @@ type LLMConfig struct {
 // WorkspaceConfig configures the workspace manager.
 type WorkspaceConfig struct {
 	BaseDir string `json:"base_dir,omitempty"`
+}
+
+// SeedsConfig configures the seed case library (YAML files).
+type SeedsConfig struct {
+	Dir     string `json:"dir,omitempty"`
+	Enabled bool   `json:"enabled,omitempty"`
 }
 
 // ─── Constants ─────────────────────────────────────────────
@@ -173,6 +180,28 @@ func ResolveWorkspaceConfig(cfg *Config) ResolvedWorkspaceConfig {
 	}
 	if cfg.Workspace != nil && cfg.Workspace.BaseDir != "" {
 		r.BaseDir = cfg.Workspace.BaseDir
+	}
+	return r
+}
+
+// ResolvedSeedsConfig holds the final resolved seeds configuration.
+type ResolvedSeedsConfig struct {
+	Dir     string
+	Enabled bool
+}
+
+// ResolveSeedsConfig merges config file values + defaults.
+// Returns Dir="" and Enabled=true by default.
+func ResolveSeedsConfig(cfg *Config) ResolvedSeedsConfig {
+	r := ResolvedSeedsConfig{
+		Dir:     "./seeds",
+		Enabled: true,
+	}
+	if cfg.Seeds != nil {
+		if cfg.Seeds.Dir != "" {
+			r.Dir = cfg.Seeds.Dir
+		}
+		r.Enabled = cfg.Seeds.Enabled
 	}
 	return r
 }

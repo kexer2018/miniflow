@@ -244,11 +244,7 @@ func runDiagnose(cmd *cobra.Command, args []string) error {
 	if logText == "" {
 		return fmt.Errorf("either --log or --log-file is required")
 	}
-
-	dc, err := createDiagnoseConfig()
-	if err != nil {
-		return fmt.Errorf("diagnose config: %w", err)
-	}
+	dc := createDiagnoseConfig()
 
 	ctx := context.Background()
 	result := fixer.Diagnose(ctx, dc, diagnoseStepName, logText)
@@ -260,11 +256,7 @@ func runDiagnose(cmd *cobra.Command, args []string) error {
 
 // autoDiagnoseFailedSteps 对流水线中失败的步骤进行自动诊断。
 func autoDiagnoseFailedSteps(ctx context.Context, result *internalpipeline.PipelineResult) {
-	dc, err := createDiagnoseConfig()
-	if err != nil {
-		slog.Warn("auto-diagnose unavailable", "error", err)
-		return
-	}
+	dc := createDiagnoseConfig()
 
 	fmt.Println()
 	fmt.Println("═══════════════════════════════════════════")
@@ -293,20 +285,30 @@ func autoDiagnoseFailedSteps(ctx context.Context, result *internalpipeline.Pipel
 
 // ─── 诊断配置 ─────────────────────────────────────────────
 
-// createDiagnoseConfig 从已解析的配置创建诊断配置（含 LLM 客户端）。
-func createDiagnoseConfig() (fixer.DiagnoseConfig, error) {
-	if resolvedLLM.APIKey == "" {
-		return fixer.DiagnoseConfig{}, fmt.Errorf("LLM API key not configured (set LLM_API_KEY env var or add to config file)")
+// createDiagnoseConfig 从已解析的配置创建诊断配置（含 LLM 客户端和种子库）。
+// 即使没有 API Key，也会返回可用的 RAG-only 降级配置。
+func createDiagnoseConfig() fixer.DiagnoseConfig {
+	cfg := loadConfig()
+	resolvedSeeds := config.ResolveSeedsConfig(cfg)
+
+	var llmClient llm.LLMClient
+	if resolvedLLM.APIKey != "" {
+		llmClient = llm.NewOpenAIClientWithConfig(resolvedLLM.APIKey, resolvedLLM.BaseURL, resolvedLLM.Model)
 	}
 
-	llmClient := llm.NewOpenAIClientWithConfig(resolvedLLM.APIKey, resolvedLLM.BaseURL, resolvedLLM.Model)
+	var seedEngine *fixer.SeedEngine
+	if resolvedSeeds.Enabled {
+		seedEngine = fixer.NewSeedEngineWithSeedsDir(resolvedSeeds.Dir)
+	} else {
+		seedEngine = fixer.NewSeedEngine()
+	}
 
 	return fixer.DiagnoseConfig{
 		LLM:        llmClient,
 		Sanitizer:  internalLog.NewSanitizerWithSemantic(),
 		Classifier: internalLog.NewClassifier(),
-		SeedEngine: fixer.NewSeedEngine(),
-	}, nil
+		SeedEngine: seedEngine,
+	}
 }
 
 // ─── 输出 ─────────────────────────────────────────────────
