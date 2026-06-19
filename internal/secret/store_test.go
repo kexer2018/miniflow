@@ -122,3 +122,33 @@ func TestAllSecretsMap(t *testing.T) {
 		t.Errorf("expected 'env_val', got %q", m["ENV_KEY"])
 	}
 }
+
+func TestMustLoad(t *testing.T) {
+	store := MustLoad("/nonexistent/path.json")
+	if store == nil {
+		t.Fatal("MustLoad should never return nil")
+	}
+}
+
+func TestLoadFromFileParseError(t *testing.T) {
+	f, err := os.CreateTemp("", "bad-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("{invalid json}")
+	f.Close()
+	defer os.Remove(f.Name())
+
+	_, err = LoadFromFile(f.Name())
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestLoadFromFileReadError(t *testing.T) {
+	_, err := LoadFromFile("/proc/1/root/nonexistent")
+	// should not error (file not found = empty store)
+	if err != nil {
+		t.Errorf("expected nil for non-existent file, got: %v", err)
+	}
+}

@@ -49,7 +49,7 @@ func NewCredentialStore() *CredentialStore {
 
 // LoadFromFile 从 JSON 文件加载凭证。
 // path 为空时返回空 store（无错误）。
-// 文件不存在时返回 nil, nil（非致命）。
+// 文件不存在时返回空 store（非致命）。
 func LoadFromFile(path string) (*CredentialStore, error) {
 	if path == "" {
 		return NewCredentialStore(), nil
@@ -82,7 +82,7 @@ func LoadFromFile(path string) (*CredentialStore, error) {
 	return &CredentialStore{creds: file.Credentials}, nil
 }
 
-// MustLoad 加载凭证，失败时 panic（用于 main 中快速失败）。
+// MustLoad 加载凭证，失败时返回空 store（非致命，用于 main 中兜底）。
 func MustLoad(path string) *CredentialStore {
 	store, err := LoadFromFile(path)
 	if err != nil {
@@ -134,9 +134,6 @@ func (s *CredentialStore) ResolveSecret(id string) (string, bool) {
 	}
 	for _, c := range s.creds {
 		if c.ID == id {
-			if c.Type == CredTypeEnv {
-				return c.Value, true
-			}
 			return c.Value, true
 		}
 	}
