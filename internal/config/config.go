@@ -28,9 +28,10 @@ import (
 
 // Config represents the complete miniflow configuration.
 type Config struct {
-	LLM       *LLMConfig       `json:"llm,omitempty"`
-	Workspace *WorkspaceConfig `json:"workspace,omitempty"`
-	Seeds     *SeedsConfig     `json:"seeds,omitempty"`
+	LLM         *LLMConfig       `json:"llm,omitempty"`
+	Workspace   *WorkspaceConfig `json:"workspace,omitempty"`
+	Credentials string           `json:"credentials,omitempty"` // 凭据文件路径
+	Seeds       *SeedsConfig     `json:"seeds,omitempty"`
 }
 
 // LLMConfig configures the LLM client.

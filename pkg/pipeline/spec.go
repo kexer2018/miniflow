@@ -28,14 +28,15 @@ type SourceSpec struct {
 
 // StepSpec 定义流水线中的一个步骤。
 type StepSpec struct {
-	Name      string   `json:"name"`                 // 步骤唯一名称
-	Image     string   `json:"image"`                // 容器镜像（如 "golang:1.22"）
-	Commands  []string `json:"commands"`             // 按顺序执行的命令
-	DependsOn []string `json:"depends_on,omitempty"` // 依赖的步骤名称列表
-	Cache     *Cache   `json:"cache,omitempty"`      // 缓存挂载策略
-	Env       []string `json:"env,omitempty"`        // 环境变量（K=V 格式）
-	Secrets   []string `json:"secrets,omitempty"`    // 引用的密钥名称列表
-	Timeout   int      `json:"timeout,omitempty"`    // 步骤超时时间（秒），0 表示不限制
+	Name       string   `json:"name"`                 // 步骤唯一名称
+	Image      string   `json:"image"`                // 容器镜像（如 "golang:1.22"）
+	Commands   []string `json:"commands"`             // 按顺序执行的命令
+	DependsOn  []string `json:"depends_on,omitempty"` // 依赖的步骤名称列表
+	Cache      *Cache   `json:"cache,omitempty"`      // 缓存挂载策略
+	Env        []string `json:"env,omitempty"`        // 环境变量（K=V 格式）
+	Secrets    []string `json:"secrets,omitempty"`    // 引用的密钥名称列表
+	Timeout    int      `json:"timeout,omitempty"`    // 步骤超时时间（秒），0 表示不限制
+	Entrypoint []string `json:"entrypoint,omitempty"` // 覆盖容器 entrypoint（处理自定义 ENTRYPOINT 的镜像）
 }
 
 // Cache 定义缓存挂载策略。
@@ -79,8 +80,12 @@ func (s *PipelineSpec) Validate() error {
 			trueVal := true
 			s.Source.Shallow = &trueVal
 		}
-		if s.Source.Depth <= 0 {
-			s.Source.Depth = 50
+		if *s.Source.Shallow {
+			if s.Source.Depth <= 0 {
+				s.Source.Depth = 50
+			}
+		} else {
+			s.Source.Depth = 0 // full clone
 		}
 	}
 

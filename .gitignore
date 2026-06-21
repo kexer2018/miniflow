@@ -9,6 +9,7 @@ dist/
 .codegraph
 .claude
 openspec/
+superpowers/
 
 # ─── Go ────────────────────────────────────────────────────
 *.test

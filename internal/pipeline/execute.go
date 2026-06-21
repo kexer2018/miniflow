@@ -84,7 +84,13 @@ func (e *Executor) ExecutePipeline(ctx context.Context, p *Pipeline) *PipelineRe
 		// 非致命错误，继续执行
 	}
 
-	// 4. 串行执行 Steps
+	// 4. 确定容器内工作目录（来自 spec.Workspace，兜底 /workspace）
+	workDir := p.Workspace
+	if workDir == "" {
+		workDir = container.DefaultWorkDir
+	}
+
+	// 5. 串行执行 Steps
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -103,7 +109,7 @@ func (e *Executor) ExecutePipeline(ctx context.Context, p *Pipeline) *PipelineRe
 			break
 		}
 
-		stepResult := e.executeStep(ctx, step, wsPath, p.ID)
+		stepResult := e.executeStep(ctx, step, wsPath, workDir)
 		result.StepResults = append(result.StepResults, stepResult)
 
 		slog.Info("step completed",
@@ -130,7 +136,7 @@ func (e *Executor) ExecutePipeline(ctx context.Context, p *Pipeline) *PipelineRe
 		}
 	}
 
-	// 5. 如果所有步骤都成功，标记为成功
+	// 6. 如果所有步骤都成功，标记为成功
 	if result.Status == StatusRunning {
 		result.Status = StatusSuccess
 	}
@@ -150,7 +156,7 @@ func (e *Executor) ExecutePipeline(ctx context.Context, p *Pipeline) *PipelineRe
 // ─── 单步执行 ─────────────────────────────────────────────
 
 // executeStep 执行单个 Step。
-func (e *Executor) executeStep(ctx context.Context, step Step, wsPath, _ string) StepResult {
+func (e *Executor) executeStep(ctx context.Context, step Step, wsPath, workDir string) StepResult {
 	slog.Debug("executing step", "name", step.Name, "image", step.Image, "timeout", step.Timeout)
 
 	// 如果步骤配置了超时，创建带超时的 context
@@ -164,15 +170,16 @@ func (e *Executor) executeStep(ctx context.Context, step Step, wsPath, _ string)
 
 	// 构建容器配置
 	cfg := container.Config{
-		Image:     step.Image,
-		Commands:  step.Commands,
-		Env:       step.Env,
-		User:      container.DefaultUID,
-		WorkDir:   container.DefaultWorkDir,
+		Image:      step.Image,
+		Commands:   step.Commands,
+		Entrypoint: step.Entrypoint,
+		Env:        step.Env,
+		User:       container.DefaultUID,
+		WorkDir:    workDir,
 		NetworkEnabled: true,
 		Workspace: &container.WorkspaceMount{
 			Source: wsPath,
-			Target: container.DefaultWorkDir,
+			Target: workDir,
 		},
 	}
 

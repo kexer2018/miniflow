@@ -140,6 +140,25 @@ func (s *CredentialStore) ResolveSecret(id string) (string, bool) {
 	return "", false
 }
 
+// ResolveSecretEnv 返回适合直接注入容器 env 的 "KEY=VALUE" 格式值。
+// CredTypeEnv 类型的凭证值本身已是 "KEY=VALUE" 格式，直接返回。
+// 其他类型以 `id=value` 格式构造。
+// ok=false 表示未找到。
+func (s *CredentialStore) ResolveSecretEnv(id string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	for _, c := range s.creds {
+		if c.ID == id {
+			if c.Type == CredTypeEnv {
+				return c.Value, true
+			}
+			return id + "=" + c.Value, true
+		}
+	}
+	return "", false
+}
+
 // AllSecretsMap 返回所有 type=env 凭证的 key→value 映射。
 // 用于批量注册到 log.Sanitizer。
 func (s *CredentialStore) AllSecretsMap() map[string]string {

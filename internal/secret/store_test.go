@@ -152,3 +152,35 @@ func TestLoadFromFileReadError(t *testing.T) {
 		t.Errorf("expected nil for non-existent file, got: %v", err)
 	}
 }
+
+func TestResolveSecretEnv(t *testing.T) {
+	store := &CredentialStore{creds: []*Credential{
+		{ID: "TOKEN", Type: CredTypeToken, Value: "sgp_xxx"},
+		{ID: "NPM_TOKEN", Type: CredTypeEnv, Value: "NPM_TOKEN=npm_abc"},
+	}}
+
+	// token type → "id=value"
+	val, ok := store.ResolveSecretEnv("TOKEN")
+	if !ok || val != "TOKEN=sgp_xxx" {
+		t.Errorf("expected 'TOKEN=sgp_xxx', got %q (ok=%v)", val, ok)
+	}
+
+	// env type → "KEY=VALUE" as-is
+	val, ok = store.ResolveSecretEnv("NPM_TOKEN")
+	if !ok || val != "NPM_TOKEN=npm_abc" {
+		t.Errorf("expected 'NPM_TOKEN=npm_abc', got %q", val)
+	}
+
+	// nonexistent
+	_, ok = store.ResolveSecretEnv("nonexistent")
+	if ok {
+		t.Error("expected ok=false for nonexistent secret")
+	}
+
+	// nil store
+	var nilStore *CredentialStore
+	_, ok = nilStore.ResolveSecretEnv("test")
+	if ok {
+		t.Error("expected ok=false for nil store")
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 
 	"github.com/kexer2018/miniflow/internal/config"
 	"github.com/kexer2018/miniflow/internal/container"
+	"github.com/kexer2018/miniflow/internal/secret"
+	"github.com/kexer2018/miniflow/internal/source"
 	"github.com/kexer2018/miniflow/internal/db"
 	"github.com/kexer2018/miniflow/internal/fixer"
 	"github.com/kexer2018/miniflow/internal/llm"
@@ -29,10 +32,11 @@ import (
 // ─── 全局标志 ─────────────────────────────────────────────
 
 var (
-	verbose      bool
-	jsonInput    string
-	autoDiagnose bool
-	configPath   string
+	verbose         bool
+	jsonInput       string
+	autoDiagnose    bool
+	configPath      string
+	credentialsFile string
 )
 
 // ─── 已解析的全局配置 ────────────────────────────────────
@@ -70,6 +74,7 @@ func main() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	rootCmd.PersistentFlags().BoolVarP(&autoDiagnose, "auto-diagnose", "d", false, "auto-diagnose failed steps")
 	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "config file path (JSON)")
+	rootCmd.PersistentFlags().StringVarP(&credentialsFile, "credentials", "", "", "credentials file path (JSON)")
 
 	rootCmd.Flags().StringVarP(&jsonInput, "file", "f", "", "pipeline JSON file (required)")
 
@@ -128,19 +133,59 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
+	// ── 解析凭据 ────────────────────────────────────────
+	// --credentials 标志 > 配置文件 > 默认路径 ~/.miniflow/credentials.json
+	credPath := credentialsFile
+	if credPath == "" {
+		cfg := loadConfig()
+		credPath = cfg.Credentials
+	}
+	if credPath == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			credPath = filepath.Join(home, ".miniflow", "credentials.json")
+		}
+	}
+	credStore := secret.MustLoad(credPath)
+
+	// ── 构建流水线 ──────────────────────────────────────
+	// 将 pipeline 级 Env、step Secrets 解析合并到步骤 env 中
 	p := &internalpipeline.Pipeline{
 		ID:        uuid.New().String(),
 		Name:      spec.Name,
 		Version:   spec.Version,
 		Workspace: spec.Workspace,
 		Status:    internalpipeline.StatusPending,
-		Steps:     convertSteps(spec.Steps),
+		Steps:     buildSteps(spec, credStore),
 	}
 
-	executor := internalpipeline.NewExecutor(mgr, wsManager)
 	ctx, cancel := signalContext()
 	defer cancel()
 
+	// Create workspace and clone source if configured
+	wsPath, err := wsManager.CreateWorkspace(p.ID)
+	if err != nil {
+		return fmt.Errorf("create workspace: %w", err)
+	}
+
+	if spec.Source != nil {
+		slog.Info("checking out source",
+			"repo", spec.Source.Repository,
+			"ref", spec.Source.Ref,
+		)
+
+		sourceMgr := source.NewManager(credStore)
+		checkoutResult, err := sourceMgr.PrepareWorkspace(ctx, spec.Source, wsPath)
+		if err != nil {
+			return fmt.Errorf("source checkout: %w", err)
+		}
+		slog.Info("source checked out",
+			"commit", checkoutResult.CommitSHA,
+			"ref", checkoutResult.Ref,
+		)
+	}
+
+	executor := internalpipeline.NewExecutor(mgr, wsManager)
 	result := executor.ExecutePipeline(ctx, p)
 
 	// 脱敏 Step 日志（用于存储和后续 LLM 分析）
@@ -385,24 +430,53 @@ func readPipelineSpec(path string) (*pipelinespec.PipelineSpec, error) {
 	return &spec, nil
 }
 
-func convertSteps(specSteps []pipelinespec.StepSpec) []internalpipeline.Step {
-	steps := make([]internalpipeline.Step, len(specSteps))
-	for i, s := range specSteps {
-		step := internalpipeline.Step{
-			Name:      s.Name,
-			Image:     s.Image,
-			Commands:  s.Commands,
-			DependsOn: s.DependsOn,
-			Env:       s.Env,
-			Timeout:   time.Duration(s.Timeout) * time.Second,
+// buildSteps 将 PipelineSpec 转换为执行引擎的 Step 列表，
+// 同时合并 pipeline 级环境变量并解析步骤密钥。
+func buildSteps(spec *pipelinespec.PipelineSpec, credStore *secret.CredentialStore) []internalpipeline.Step {
+	// 1. pipeline 级 Env map → K=V slice
+	pipelineEnv := make([]string, 0, len(spec.Env))
+	// 按 key 排序以确保确定性顺序
+	keys := make([]string, 0, len(spec.Env))
+	for k := range spec.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		pipelineEnv = append(pipelineEnv, k+"="+spec.Env[k])
+	}
+
+	steps := make([]internalpipeline.Step, len(spec.Steps))
+	for i, s := range spec.Steps {
+		// 2. 步骤 env = pipeline env 作为基底，步骤自身的 env 追加（相同 key 后者覆盖前者）
+		env := make([]string, len(pipelineEnv), len(pipelineEnv)+len(s.Env)+len(s.Secrets))
+		copy(env, pipelineEnv)
+		env = append(env, s.Env...)
+
+		// 3. 解析 Secrets 注入为 KEY=VALUE 格式的环境变量
+		for _, secName := range s.Secrets {
+			if val, ok := credStore.ResolveSecretEnv(secName); ok {
+				env = append(env, val)
+			} else {
+				slog.Warn("secret not found, skipping",
+					"secret", secName, "step", s.Name)
+			}
+		}
+
+		steps[i] = internalpipeline.Step{
+			Name:       s.Name,
+			Image:      s.Image,
+			Commands:   s.Commands,
+			DependsOn:  s.DependsOn,
+			Env:        env,
+			Entrypoint: s.Entrypoint,
+			Timeout:    time.Duration(s.Timeout) * time.Second,
 		}
 		if s.Cache != nil {
-			step.Cache = &internalpipeline.Cache{
+			steps[i].Cache = &internalpipeline.Cache{
 				Path: s.Cache.Path,
 				Key:  s.Cache.Key,
 			}
 		}
-		steps[i] = step
 	}
 	return steps
 }
