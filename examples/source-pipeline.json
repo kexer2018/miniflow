@@ -3,7 +3,7 @@
   "name": "source-demo",
   "workspace": "/workspace",
   "source": {
-    "repository": "https://github.com/kexer2018/todo-app-demo.git",
+    "repository": "https://github.com/kexer2018/express-api.git",
     "ref": "main",
     "shallow": true,
     "depth": 10
@@ -23,10 +23,14 @@
       "name": "verify-git",
       "image": "alpine:latest",
       "commands": [
-        "apk add --no-cache git >/dev/null 2>&1",
-        "cd /workspace && git log --oneline -3",
+        "echo '=== Verify git repo ==='",
+        "ls -la /workspace/.git",
         "echo '---'",
-        "cd /workspace && git rev-parse HEAD"
+        "cat /workspace/.git/HEAD",
+        "echo '---'",
+        "ls /workspace/.git/objects | head -5",
+        "echo '---'",
+        "echo 'Git checkout verified successfully'"
       ],
       "depends_on": ["inspect-workspace"]
     }
