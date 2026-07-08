@@ -36,7 +36,8 @@ type StepSpec struct {
 	Env        []string `json:"env,omitempty"`        // 环境变量（K=V 格式）
 	Secrets    []string `json:"secrets,omitempty"`    // 引用的密钥名称列表
 	Timeout    int      `json:"timeout,omitempty"`    // 步骤超时时间（秒），0 表示不限制
-	Entrypoint []string `json:"entrypoint,omitempty"` // 覆盖容器 entrypoint（处理自定义 ENTRYPOINT 的镜像）
+	Entrypoint []string `json:"entrypoint,omitempty"` // 覆盖容器 entrypoint
+	SSHAgent   bool     `json:"ssh_agent,omitempty"`  // 映射宿主 ~/.ssh 到容器
 }
 
 // Cache 定义缓存挂载策略。

@@ -177,6 +177,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, wsPath, workDir s
 		User:       container.DefaultUID,
 		WorkDir:    workDir,
 		NetworkEnabled: true,
+		SSHAgent:  step.SSHAgent,
 		Workspace: &container.WorkspaceMount{
 			Source: wsPath,
 			Target: workDir,

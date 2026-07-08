@@ -1,0 +1,33 @@
+{
+  "version": "1.0",
+  "name": "go-ci-ssh",
+  "workspace": "/workspace",
+  "steps": [
+    {
+      "name": "git-clone",
+      "image": "ci-golang:latest",
+      "ssh_agent": true,
+      "commands": [
+        "git clone git@github.com:kexer2018/miniflow.git .",
+        "ls -la"
+      ]
+    },
+    {
+      "name": "test",
+      "image": "ci-golang:latest",
+      "commands": [
+        "go version",
+        "go test ./... -v -count=1 -timeout=60s"
+      ],
+      "depends_on": ["git-clone"]
+    },
+    {
+      "name": "build",
+      "image": "ci-golang:latest",
+      "commands": [
+        "go build -o /workspace/bin/miniflow ./cmd/miniflow/"
+      ],
+      "depends_on": ["test"]
+    }
+  ]
+}

@@ -19,6 +19,7 @@ type Config struct {
 	Workspace  *WorkspaceMount   // 共享工作空间挂载
 	CacheMount []CacheMount      // 缓存卷挂载
 	NetworkEnabled bool          // 是否启用网络
+	SSHAgent     bool            // 是否转发宿主 SSH Agent
 }
 
 // WorkspaceMount 描述共享工作空间的挂载方式。

@@ -29,6 +29,7 @@ type Step struct {
 	Env       []string        `json:"env,omitempty"`
 	Entrypoint []string       `json:"entrypoint,omitempty"`
 	Timeout   time.Duration   `json:"-"` // 步骤超时，0 表示不限制（从 spec 的秒数转换）
+	SSHAgent  bool            `json:"-"` // 是否转发宿主 SSH Agent 到容器
 }
 
 // Cache 定义步骤级别的缓存挂载策略。

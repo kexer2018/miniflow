@@ -1,0 +1,46 @@
+{
+  "version": "1.0",
+  "name": "validate-ssh-agent",
+  "workspace": "/workspace",
+  "steps": [
+    {
+      "name": "check-ssh-agent",
+      "image": "alpine:latest",
+      "ssh_agent": true,
+      "commands": [
+        "echo '=== Step 1: SSH Agent 环境变量 ==='",
+        "echo \"SSH_AUTH_SOCK=$SSH_AUTH_SOCK\"",
+        "",
+        "echo '=== Step 2: Socket 文件验证 ==='",
+        "if [ -S \"$SSH_AUTH_SOCK\" ]; then",
+        "  echo \"✅ Socket 文件 $SSH_AUTH_SOCK 存在且是 socket 类型\"",
+        "else",
+        "  echo \"❌ Socket 文件 $SSH_AUTH_SOCK 不可访问\"",
+        "  ls -la /ssh-agent.sock 2>&1",
+        "fi",
+        "",
+        "echo '=== Step 3: GIT_SSH_COMMAND 配置 ==='",
+        "echo \"GIT_SSH_COMMAND=$GIT_SSH_COMMAND\""
+      ]
+    },
+    {
+      "name": "git-auth-test",
+      "image": "golang:1.23-alpine",
+      "ssh_agent": true,
+      "commands": [
+        "echo '=== 测试 SSH 到 GitHub ==='",
+        "ssh -T git@github.com 2>&1 || true",
+        "",
+        "echo ''",
+        "echo '=== known_hosts 文件 ==='",
+        "ls -la /etc/ssh/ssh_known_hosts 2>&1 || echo 'not mounted'",
+        "",
+        "echo ''",
+        "echo '=== 容器内确认 key ==='",
+        "echo \"SSH_AUTH_SOCK=$SSH_AUTH_SOCK\"",
+        "ls -la $SSH_AUTH_SOCK"
+      ],
+      "depends_on": ["check-ssh-agent"]
+    }
+  ]
+}

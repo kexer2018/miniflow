@@ -430,12 +430,10 @@ func readPipelineSpec(path string) (*pipelinespec.PipelineSpec, error) {
 	return &spec, nil
 }
 
-// buildSteps 将 PipelineSpec 转换为执行引擎的 Step 列表，
-// 同时合并 pipeline 级环境变量并解析步骤密钥。
+// buildSteps converts PipelineSpec to engine Step list,
+// merging pipeline-level env and resolving secrets.
 func buildSteps(spec *pipelinespec.PipelineSpec, credStore *secret.CredentialStore) []internalpipeline.Step {
-	// 1. pipeline 级 Env map → K=V slice
 	pipelineEnv := make([]string, 0, len(spec.Env))
-	// 按 key 排序以确保确定性顺序
 	keys := make([]string, 0, len(spec.Env))
 	for k := range spec.Env {
 		keys = append(keys, k)
@@ -447,12 +445,10 @@ func buildSteps(spec *pipelinespec.PipelineSpec, credStore *secret.CredentialSto
 
 	steps := make([]internalpipeline.Step, len(spec.Steps))
 	for i, s := range spec.Steps {
-		// 2. 步骤 env = pipeline env 作为基底，步骤自身的 env 追加（相同 key 后者覆盖前者）
 		env := make([]string, len(pipelineEnv), len(pipelineEnv)+len(s.Env)+len(s.Secrets))
 		copy(env, pipelineEnv)
 		env = append(env, s.Env...)
 
-		// 3. 解析 Secrets 注入为 KEY=VALUE 格式的环境变量
 		for _, secName := range s.Secrets {
 			if val, ok := credStore.ResolveSecretEnv(secName); ok {
 				env = append(env, val)
@@ -470,6 +466,7 @@ func buildSteps(spec *pipelinespec.PipelineSpec, credStore *secret.CredentialSto
 			Env:        env,
 			Entrypoint: s.Entrypoint,
 			Timeout:    time.Duration(s.Timeout) * time.Second,
+			SSHAgent:   s.SSHAgent,
 		}
 		if s.Cache != nil {
 			steps[i].Cache = &internalpipeline.Cache{
