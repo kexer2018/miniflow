@@ -430,9 +430,35 @@ func readPipelineSpec(path string) (*pipelinespec.PipelineSpec, error) {
 	return &spec, nil
 }
 
+// parseEnvFile 读取并解析 .env 文件，返回 KEY=VALUE 格式列表。
+// 支持：KEY=VALUE 行、# 注释、空行跳过。
+func parseEnvFile(path string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("read env_file: %w", err)
+	}
+
+	var result []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !strings.Contains(line, "=") {
+			slog.Warn("env_file: skipping line without '='", "line", line)
+			continue
+		}
+		result = append(result, line)
+	}
+
+	slog.Debug("env_file parsed", "path", path, "pairs", len(result))
+	return result, nil
+}
+
 // buildSteps converts PipelineSpec to engine Step list,
 // merging pipeline-level env and resolving secrets.
 func buildSteps(spec *pipelinespec.PipelineSpec, credStore *secret.CredentialStore) []internalpipeline.Step {
+	// 收集 pipeline-level 环境变量（spec.Env）
 	pipelineEnv := make([]string, 0, len(spec.Env))
 	keys := make([]string, 0, len(spec.Env))
 	for k := range spec.Env {
@@ -441,6 +467,35 @@ func buildSteps(spec *pipelinespec.PipelineSpec, credStore *secret.CredentialSto
 	sort.Strings(keys)
 	for _, k := range keys {
 		pipelineEnv = append(pipelineEnv, k+"="+spec.Env[k])
+	}
+
+	// 如果指定了 env_file，解析并合并（spec.Env 优先级更高）
+	if spec.EnvFile != "" {
+		envFilePairs, err := parseEnvFile(spec.EnvFile)
+		if err != nil {
+			slog.Warn("failed to read env_file, skipping", "path", spec.EnvFile, "error", err)
+		} else {
+			// 构建映射：env_file 先，spec.Env 覆盖
+			envMap := make(map[string]string, len(envFilePairs)+len(spec.Env))
+			for _, pair := range envFilePairs {
+				if k, v, ok := strings.Cut(pair, "="); ok {
+					envMap[k] = v
+				}
+			}
+			for k, v := range spec.Env {
+				envMap[k] = v // spec.Env 优先级更高
+			}
+			// 重建 pipelineEnv
+			mergedKeys := make([]string, 0, len(envMap))
+			for k := range envMap {
+				mergedKeys = append(mergedKeys, k)
+			}
+			sort.Strings(mergedKeys)
+			pipelineEnv = make([]string, 0, len(mergedKeys))
+			for _, k := range mergedKeys {
+				pipelineEnv = append(pipelineEnv, k+"="+envMap[k])
+			}
+		}
 	}
 
 	steps := make([]internalpipeline.Step, len(spec.Steps))
@@ -491,45 +546,137 @@ func signalContext() (context.Context, context.CancelFunc) {
 }
 
 func printResult(r *internalpipeline.PipelineResult) {
-	fmt.Println()
-	fmt.Println("═══════════════════════════════════════════")
-	fmt.Println("  Pipeline Result")
-	fmt.Println("═══════════════════════════════════════════")
-	fmt.Printf("  Name:     %s\n", r.Name)
-	fmt.Printf("  Status:   %s\n", r.Status)
-	fmt.Printf("  Duration: %d ms\n", r.DurationMs)
-	fmt.Println("───────────────────────────────────────────")
-
+	// ─── 统计 ─────────────────────────────────────────
+	successCount := 0
+	failedCount := 0
+	skippedCount := 0
 	for _, sr := range r.StepResults {
-		icon := "✅"
-		statusStr := string(sr.Status)
 		switch sr.Status {
+		case internalpipeline.StatusSuccess:
+			successCount++
 		case internalpipeline.StatusFailed:
-			icon = "❌"
+			failedCount++
 		case internalpipeline.StatusSkipped:
-			icon = "⏭️"
-		}
-
-		fmt.Printf("  %s %s\n", icon, sr.Name)
-		fmt.Printf("     Status:   %s\n", statusStr)
-		fmt.Printf("     Duration: %d ms\n", sr.DurationMs)
-
-		if sr.ExitCode != 0 {
-			fmt.Printf("     Exit:     %d\n", sr.ExitCode)
-		}
-		if sr.Error != "" {
-			fmt.Printf("     Error:    %s\n", sr.Error)
-		}
-		if sr.RawLog != "" {
-			fmt.Println("     --- Output ---")
-			for _, line := range strings.Split(sr.RawLog, "\n") {
-				if trimmed := strings.TrimSpace(line); trimmed != "" {
-					fmt.Printf("     | %s\n", trimmed)
-				}
-			}
-			fmt.Println("     --------------")
+			skippedCount++
 		}
 	}
 
-	fmt.Println("═══════════════════════════════════════════")
+	// ─── 顶部标题 ──────────────────────────────────────
+	fmt.Println()
+	printLine("╔", "╗")
+	fmt.Printf("║  🚀  Pipeline: %-49s║\n", r.Name)
+	printLine("╚", "╝")
+	fmt.Println()
+
+	// ─── 概要信息 ──────────────────────────────────────
+	statusIcon := "✅ Success"
+	switch r.Status {
+	case internalpipeline.StatusSuccess:
+		statusIcon = "✅  Success"
+	case internalpipeline.StatusFailed:
+		statusIcon = "❌  Failed"
+	case internalpipeline.StatusCancelled:
+		statusIcon = "🚫 Cancelled"
+	}
+
+	fmt.Printf("  Status     : %s\n", statusIcon)
+	fmt.Printf("  Duration   : %d ms\n", r.DurationMs)
+	fmt.Printf("  Steps      : %d total  ✅ %d  ❌ %d  ⏭️ %d\n",
+		r.TotalSteps, successCount, failedCount, skippedCount)
+	fmt.Println()
+
+	// ─── 步骤明细 ──────────────────────────────────────
+	fmt.Printf("  ── Steps ────────────────────────────────────\n\n")
+
+	for _, sr := range r.StepResults {
+		icon := "✅"
+		statusTag := "PASS"
+		switch sr.Status {
+		case internalpipeline.StatusFailed:
+			icon = "❌"
+			statusTag = "FAIL"
+		case internalpipeline.StatusSkipped:
+			icon = "⏭️"
+			statusTag = "SKIP"
+		}
+
+		// 步骤标题行
+		stepLabel := fmt.Sprintf("%s  [%s]  %s", icon, statusTag, sr.Name)
+		timeLabel := fmt.Sprintf("%d ms", sr.DurationMs)
+		fmt.Printf("    %-60s %10s\n", stepLabel, timeLabel)
+
+		// 错误信息（如果有）
+		if sr.Error != "" || sr.ExitCode != 0 {
+			fmt.Printf("      ── Error ─────────────────────\n")
+			if sr.Error != "" {
+				fmt.Printf("      %s\n", sr.Error)
+			}
+			if sr.ExitCode != 0 {
+				fmt.Printf("      Exit code: %d\n", sr.ExitCode)
+			}
+			fmt.Printf("      ───────────────────────────────\n")
+		}
+
+		// 输出日志（如果有）
+		if sr.RawLog != "" {
+			lines := strings.Split(strings.TrimSpace(sr.RawLog), "\n")
+			// 如果输出行不多，直接展示
+			if len(lines) <= 12 {
+				fmt.Printf("      ── Output ─────────────────────\n")
+				for _, line := range lines {
+					if trimmed := strings.TrimSpace(line); trimmed != "" {
+						fmt.Printf("      │ %s\n", trimmed)
+					}
+				}
+				fmt.Printf("      ───────────────────────────────\n")
+			} else {
+				// 输出太多，显示前 6 行 + 省略 + 后 3 行
+				fmt.Printf("      ── Output (%d lines) ────────────\n", len(lines))
+				for _, line := range lines[:6] {
+					if trimmed := strings.TrimSpace(line); trimmed != "" {
+						fmt.Printf("      │ %s\n", trimmed)
+					}
+				}
+				fmt.Printf("      │ ... (%d more lines) ...\n", len(lines)-9)
+				for _, line := range lines[len(lines)-3:] {
+					if trimmed := strings.TrimSpace(line); trimmed != "" {
+						fmt.Printf("      │ %s\n", trimmed)
+					}
+				}
+				fmt.Printf("      ───────────────────────────────\n")
+			}
+		}
+		fmt.Println()
+	}
+
+	// ─── 底部总结 ──────────────────────────────────────
+	fmt.Println("  ─────────────────────────────────────────────")
+	fmt.Println()
+
+	var footerIcon string
+	var footerMsg string
+	switch r.Status {
+	case internalpipeline.StatusSuccess:
+		footerIcon = "🎉"
+		footerMsg = fmt.Sprintf("All %d steps passed successfully!", r.TotalSteps)
+	case internalpipeline.StatusFailed:
+		footerIcon = "❌"
+		footerMsg = fmt.Sprintf("Pipeline failed — %d step(s) encountered errors.", failedCount)
+	case internalpipeline.StatusCancelled:
+		footerIcon = "🚫"
+		footerMsg = "Pipeline was cancelled."
+	}
+
+	printLine("╔", "╗")
+	fmt.Printf("║  %s  %-50s║\n", footerIcon, footerMsg)
+	printLine("╚", "╝")
+	fmt.Println()
+}
+
+func printLine(left, right string) {
+	fmt.Print(left)
+	for i := 0; i < 60; i++ {
+		fmt.Print("═")
+	}
+	fmt.Println(right)
 }

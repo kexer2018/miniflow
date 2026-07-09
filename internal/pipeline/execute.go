@@ -4,9 +4,19 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/kexer2018/miniflow/internal/container"
+)
+
+// ─── SSH 注入常量 ─────────────────────────────────────────
+const (
+	containerSSHDir   = "/miniflow/ssh"       // 容器模式下宿主 ~/.ssh 的挂载点
+	miniflowDir       = ".miniflow"           // workspace 内的 miniflow 管理目录
+	sshDirName        = "ssh"                 // workspace 内 SSH 密钥存放子目录
 )
 
 // ─── 执行引擎 ─────────────────────────────────────────────
@@ -23,6 +33,80 @@ func NewExecutor(mgr container.Manager, wsm *container.WorkspaceManager) *Execut
 		containerMgr: mgr,
 		wsManager:    wsm,
 	}
+}
+
+// ─── SSH 密钥注入 ─────────────────────────────────────────
+
+// injectSSHKeys 读取宿主 SSH 密钥并注入工作空间，供步骤容器使用。
+//
+// 优先查找容器模式路径 /miniflow/ssh/（用户部署时 -v ~/.ssh:/miniflow/ssh）。
+// 降级查找 ~/.ssh/（本地 CLI 运行模式）。
+func (e *Executor) injectSSHKeys(wsPath string) error {
+	candidates := []string{}
+
+	// 容器模式路径
+	if info, err := os.Stat(containerSSHDir); err == nil && info.IsDir() {
+		candidates = append(candidates, containerSSHDir)
+	}
+
+	// 本地模式路径
+	home, err := os.UserHomeDir()
+	if err == nil {
+		sshHome := filepath.Join(home, ".ssh")
+		if info, err := os.Stat(sshHome); err == nil && info.IsDir() {
+			candidates = append(candidates, sshHome)
+		}
+	}
+
+	if len(candidates) == 0 {
+		return fmt.Errorf("no SSH directory found (checked %s and ~/.ssh)", containerSSHDir)
+	}
+
+	sshSource := candidates[0] // 容器模式路径优先
+	target := filepath.Join(wsPath, miniflowDir, sshDirName)
+
+	if err := os.MkdirAll(target, 0700); err != nil {
+		return fmt.Errorf("create .miniflow/ssh: %w", err)
+	}
+
+	entries, err := os.ReadDir(sshSource)
+	if err != nil {
+		return fmt.Errorf("read SSH dir %s: %w", sshSource, err)
+	}
+
+	copied := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+
+		// 只复制私钥和已知配置文件
+		isPrivateKey := strings.HasPrefix(name, "id_") && !strings.HasSuffix(name, ".pub")
+		isConfig := name == "config" || name == "known_hosts"
+		if !isPrivateKey && !isConfig {
+			continue
+		}
+
+		data, err := os.ReadFile(filepath.Join(sshSource, name))
+		if err != nil {
+			slog.Debug("skipping SSH file (read error)", "file", name, "error", err)
+			continue
+		}
+
+		if err := os.WriteFile(filepath.Join(target, name), data, 0600); err != nil {
+			return fmt.Errorf("write SSH key %s: %w", name, err)
+		}
+		copied++
+	}
+
+	if copied == 0 {
+		return fmt.Errorf("no SSH keys found in %s", sshSource)
+	}
+
+	slog.Info("SSH keys injected into workspace",
+		"source", sshSource, "target", target, "count", copied)
+	return nil
 }
 
 // ─── 流水线执行 ───────────────────────────────────────────
@@ -82,6 +166,13 @@ func (e *Executor) ExecutePipeline(ctx context.Context, p *Pipeline) *PipelineRe
 	if err := e.wsManager.EnsureWorkspacePermissions(ctx, e.containerMgr, wsPath); err != nil {
 		slog.Warn("workspace chown failed (non-fatal)", "error", err)
 		// 非致命错误，继续执行
+	}
+
+	// 3.5 如果有步骤需要 SSH 密钥，注入到工作空间
+	if hasSSHStep(p.Steps) {
+		if err := e.injectSSHKeys(wsPath); err != nil {
+			slog.Warn("SSH key injection failed (will attempt per-step fallback)", "error", err)
+		}
 	}
 
 	// 4. 确定容器内工作目录（来自 spec.Workspace，兜底 /workspace）
@@ -153,6 +244,16 @@ func (e *Executor) ExecutePipeline(ctx context.Context, p *Pipeline) *PipelineRe
 	return result
 }
 
+// hasSSHStep 检查是否有步骤启用了 SSH Agent。
+func hasSSHStep(steps []Step) bool {
+	for _, step := range steps {
+		if step.SSHAgent {
+			return true
+		}
+	}
+	return false
+}
+
 // ─── 单步执行 ─────────────────────────────────────────────
 
 // executeStep 执行单个 Step。
@@ -168,16 +269,33 @@ func (e *Executor) executeStep(ctx context.Context, step Step, wsPath, workDir s
 
 	startedAt := time.Now()
 
+	// 构建命令，如果需要 SSH 则前置密钥设置步骤
+	commands := step.Commands
+	env := make([]string, len(step.Env))
+	copy(env, step.Env)
+
+	if step.SSHAgent {
+		sshDirInContainer := workDir + "/" + miniflowDir + "/" + sshDirName
+		sshSetup := []string{
+			"mkdir -p ~/.ssh && chmod 700 ~/.ssh",
+			"cp -a " + sshDirInContainer + "/* ~/.ssh/ 2>/dev/null || true",
+			"chmod 600 ~/.ssh/id_* 2>/dev/null || true",
+		}
+		commands = make([]string, 0, len(step.Commands)+len(sshSetup))
+		commands = append(commands, sshSetup...)
+		commands = append(commands, step.Commands...)
+		env = append(env, "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
+	}
+
 	// 构建容器配置
 	cfg := container.Config{
 		Image:      step.Image,
-		Commands:   step.Commands,
+		Commands:   commands,
 		Entrypoint: step.Entrypoint,
-		Env:        step.Env,
+		Env:        env,
 		User:       container.DefaultUID,
 		WorkDir:    workDir,
 		NetworkEnabled: true,
-		SSHAgent:  step.SSHAgent,
 		Workspace: &container.WorkspaceMount{
 			Source: wsPath,
 			Target: workDir,

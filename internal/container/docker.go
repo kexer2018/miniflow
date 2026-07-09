@@ -111,13 +111,6 @@ func (m *DockerManager) RunContainer(ctx context.Context, cfg Config) (Result, e
 		cmd = []string{"/bin/sh", "-c", "echo no commands specified"}
 	}
 
-		// SSH 密钥挂载：注入 HOME 和 Git 配置
-		if cfg.SSHAgent {
-			cfg.Env = append(cfg.Env,
-				"HOME=/tmp",
-				"GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new",
-			)
-		}
 	hostCfg := &container.HostConfig{
 		Mounts:      buildMounts(cfg),
 		AutoRemove:  false, // 手动清理以确保日志可读
@@ -303,36 +296,6 @@ func buildMounts(cfg Config) []mount.Mount {
 		})
 	}
 
-		// SSH 密钥挂载：将宿主 ~/.ssh 目录映射到容器内
-		if cfg.SSHAgent {
-			homeDir, err := os.UserHomeDir()
-			if err == nil {
-				sshDir := filepath.Join(homeDir, ".ssh")
-				if _, statErr := os.Stat(sshDir); statErr == nil {
-					mounts = append(mounts, mount.Mount{
-						Type:     mount.TypeBind,
-						Source:   sshDir,
-						Target:   "/tmp/.ssh",
-						ReadOnly: true,
-					})
-					slog.Debug("ssh directory mounted", "source", sshDir, "target", "/tmp/.ssh")
-		
-					// 挂载 known_hosts 到系统级位置（所有用户可读，OpenSSH 自动检查）
-					knownHosts := filepath.Join(sshDir, "known_hosts")
-					if _, statErr := os.Stat(knownHosts); statErr == nil {
-						mounts = append(mounts, mount.Mount{
-							Type:     mount.TypeBind,
-							Source:   knownHosts,
-							Target:   "/etc/ssh/ssh_known_hosts",
-							ReadOnly: true,
-						})
-						slog.Debug("known_hosts mounted", "source", knownHosts, "target", "/etc/ssh/ssh_known_hosts")
-					}
-				} else {
-					slog.Warn("ssh_agent requested but ~/.ssh not found", "path", sshDir)
-				}
-			}
-		}
 
 	return mounts
 }

@@ -1,87 +1,12 @@
 package container
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
-func TestBuildMounts_SSHAgent(t *testing.T) {
-	// 创建一个假的 ~/.ssh 目录（含密钥和 known_hosts）
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	sshDir := filepath.Join(homeDir, ".ssh")
-	if err := os.MkdirAll(sshDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// 写入假密钥
-	fakeKey := filepath.Join(sshDir, "id_ed25519")
-	if err := os.WriteFile(fakeKey, []byte("fake-private-key\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	// 写入假 known_hosts
-	fakeKnownHosts := filepath.Join(sshDir, "known_hosts")
-	if err := os.WriteFile(fakeKnownHosts, []byte("github.com ssh-ed25519 AAAAC3...\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("ssh_agent=true mounts ~/.ssh and known_hosts", func(t *testing.T) {
-		cfg := Config{SSHAgent: true}
-		mounts := buildMounts(cfg)
-
-		foundSSH := false
-		foundKnownHosts := false
-		for _, m := range mounts {
-			if m.Target == "/tmp/.ssh" {
-				foundSSH = true
-				if m.Source != sshDir {
-					t.Errorf("expected source %q, got %q", sshDir, m.Source)
-				}
-				if !m.ReadOnly {
-					t.Error("~/.ssh mount should be read-only")
-				}
-			}
-			if m.Target == "/etc/ssh/ssh_known_hosts" {
-				foundKnownHosts = true
-				if !m.ReadOnly {
-					t.Error("known_hosts mount should be read-only")
-				}
-			}
-		}
-		if !foundSSH {
-			t.Error("~/.ssh mount not found when SSHAgent=true")
-		}
-		if !foundKnownHosts {
-			t.Error("known_hosts mount not found when SSHAgent=true")
-		}
-	})
-
-	t.Run("ssh_agent=false adds no ssh mounts", func(t *testing.T) {
-		cfg := Config{SSHAgent: false}
-		mounts := buildMounts(cfg)
-
-		for _, m := range mounts {
-			if m.Target == "/tmp/.ssh" || m.Target == "/etc/ssh/ssh_known_hosts" {
-				t.Errorf("unexpected ssh mount %q when SSHAgent=false", m.Target)
-			}
-		}
-	})
-
-	t.Run("ssh_agent=true without ~/.ssh warns but doesn't crash", func(t *testing.T) {
-		noSSHDir := t.TempDir()
-		t.Setenv("HOME", noSSHDir)
-		cfg := Config{SSHAgent: true}
-		mounts := buildMounts(cfg)
-
-		for _, m := range mounts {
-			if m.Target == "/tmp/.ssh" {
-				t.Error("should not mount ~/.ssh when directory doesn't exist")
-			}
-		}
-	})
-}
+// TestBuildMounts_SSHAgent 已移除：SSH 密钥注入逻辑已迁移到
+// pipeline/execute.go 的 injectSSHKeys() + executeStep() 中，
+// 不再通过 container/docker.go 的 bind mount 实现。
 
 func TestBuildMounts_Workspace(t *testing.T) {
 	mounts := buildMounts(Config{

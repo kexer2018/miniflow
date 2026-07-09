@@ -13,6 +13,7 @@ type PipelineSpec struct {
 	Workspace string              `json:"workspace,omitempty"` // 共享工作空间路径（容器内视角）
 	Source    *SourceSpec         `json:"source,omitempty"`    // 源码来源配置（引擎自动 checkout）
 	Env       map[string]string   `json:"env,omitempty"`       // 流水线级环境变量
+	EnvFile   string              `json:"env_file,omitempty"`  // .env 文件路径（miniflow 容器内路径）
 	Steps     []StepSpec          `json:"steps"`               // 步骤列表（串行执行）
 }
 
