@@ -1,1070 +1,373 @@
-# miniflow CI/CD 功能分析 & 产品路线
+# miniflow 产品化功能分析与路线
 
-> **版本**: v0.1 <!-- 初稿 -->
-> **作者**: AI 分析
-> **日期**: 2026-06-19
-
----
-
-## 目录
-
-1. [定位与愿景](#1-定位与愿景)
-2. [当前能力盘点](#2-当前能力盘点)
-3. [功能分层架构](#3-功能分层架构)
-4. [基础设施层 — 详细分析](#4-基础设施层--详细分析)
-5. [调度执行层 — 详细分析](#5-调度执行层--详细分析)
-6. [用户交互层 — 详细分析](#6-用户交互层--详细分析)
-7. [AI Native 差异化能力](#7-ai-native-差异化能力)
-8. [Spec 演进设计](#8-spec-演进设计)
-9. [推荐实施路线](#9-推荐实施路线)
-10. [附录：真实 CI 管道完整示例](#10-附录真实-ci-管道完整示例)
+> 版本: v0.2
+> 日期: 2026-07-31
+> 定位: 可视化、容器化、可扩展的流水线执行平台
 
 ---
 
-## 1. 定位与愿景
+## 1. 新定位
 
-### 一句话定位
+miniflow 不应该被定位成“替用户写业务流程的 AI CI/CD 系统”，而应该定位成：
 
-> **AI-native 轻量级 CI/CD 引擎** —— 把重复的 CI/CD 运维交给 AI，让开发者只需要描述"做什么"。
+> 一个可视化、容器化、可扩展的流水线执行平台。
 
-### 与现有系统的差异化
+产品的核心价值是把流水线从 JSON/YAML 心智模型转成图形化编排模型，并提供可靠的 Docker 执行环境。用户通过拖拽 Step、连线、配置参数来生成流水线；后端负责 DAG 校验、容器执行、共享 workspace、日志、缓存、产物和诊断。
 
-| 维度 | Jenkins / GitLab CI | GitHub Actions | **miniflow（目标）** |
-|------|---------------------|----------------|---------------------|
-| 部署复杂度 | 重（需要 JVM、插件生态） | 无需部署（SaaS） | **极轻（单二进制）** |
-| AI 能力 | 无 | Copilot 代码建议 | **AI 诊断→修复→自愈** |
-| 运行环境 | 自托管或云 | GitHub 托管 | **自托管，边缘友好** |
-| 配置格式 | XML / YAML | YAML | JSON/YAML + **AI 辅助生成** |
-| 扩展性 | 插件系统 | Marketplace | **种子 + LLM 动态推理** |
+### 1.1 产品边界
 
-### 核心设计原则
+miniflow 提供：
 
-1. **单二进制部署** — `go build` 一个文件，到处运行
-2. **AI 内建** — 每个失败自带诊断，不依赖第三方分析服务
-3. **轻量化** — 不需要数据库中间件（SQLite 自包含）
-4. **边缘友好** — 低资源消耗，适合树莓派/轻量服务器
-5. **渐进复杂** — 从 `miniflow run` 到分布式集群，平滑升级
+- Step 编排与 DAG 校验
+- 每个 Step 一个临时容器
+- 所有 Step 默认挂载同一个 workspace
+- 环境变量、密钥、缓存、产物、超时、重试
+- 运行状态、实时日志、历史记录
+- 失败日志脱敏、分类和 AI/RAG 诊断
+
+miniflow 不提供：
+
+- 强绑定业务域的 Step
+- 替用户决定发布流程
+- 隐式修改用户业务脚本
+- 早期就做庞大的插件市场
+- 把聊天框作为主交互入口
+
+### 1.2 与传统 CI/CD 的区别
+
+| 维度 | 传统 CI/CD | miniflow 产品目标 |
+|------|------------|-------------------|
+| 配置方式 | YAML/Groovy/脚本 | 可视化画布 + 表单 + 可查看 spec |
+| 执行环境 | Runner 或宿主环境 | Step 粒度临时 Docker 容器 |
+| 状态传递 | Artifact/cache 规则复杂 | 共享 workspace + 显式 artifact |
+| 扩展方式 | 插件生态或自定义脚本 | 基础 Step 原语 + 用户自有脚本/镜像 |
+| 排错体验 | 大段日志 | 节点状态 + 脱敏日志 + 诊断建议 |
 
 ---
 
 ## 2. 当前能力盘点
 
-### ✅ 已完成
+### 2.1 已完成或已有基础
 
-| 模块 | 能力 | 成熟度 |
-|------|------|--------|
-| **DAG 定义与校验** | JSON 解析、拓扑排序（Kahn）、循环检测、依赖验证 | ★★★★★ |
-| **串行执行** | 依次执行 Docker 容器，工作空间共享 | ★★★★☆ |
-| **容器生命周期** | 镜像拉取、创建、启动、等待、日志采集、清理 | ★★★★☆ |
-| **Socket 自动检测** | OrbStack → Docker Desktop → rootless 自动适配 | ★★★★★ |
-| **UID 统一** | 容器以 `1000:1000` 运行，chown 权限修复 | ★★★★★ |
-| **缓存挂载** | 指定路径和 key 的持久化缓存 | ★★★★☆ |
-| **日志脱敏** | 8 条正则规则（JWT、AWS Key、GitHub Token 等） | ★★★★☆ |
-| **日志分类** | 确定性规则分类（app_error / infra_error / unknown） | ★★★★☆ |
-| **AI 诊断** | RAG + LLM 结构化输出诊断 | ★★★★☆ |
-| **种子引擎** | 17 内置 + YAML 文件可扩展 | ★★★★☆ |
-| **SQLite 持久化** | 管道结果、执行上下文、诊断历史 | ★★★★★ |
-| **配置系统** | CLI flags → env → config file → defaults | ★★★★★ |
-| **CLI 基础** | run / validate / diagnose / version | ★★★☆☆ |
-| **种子文件** | 6 个 YAML 文件（auth、image-pull、network、permission、resource、app-code） | ★★★★☆ |
-| **Dockerfile** | 多阶段构建，alpine 运行时 | ★★★★★ |
-| **Docker Compose** | worker 部署，持久卷，健康检查 | ★★★★★ |
+| 模块 | 当前能力 | 产品化评价 |
+|------|----------|------------|
+| Pipeline Spec | JSON 输入、Step、依赖、env、cache、source、secret、timeout 字段 | 可作为 typed step 的兼容基础 |
+| DAG 校验 | 名称唯一、依赖存在、自依赖、循环检测、拓扑排序 | 可直接服务图形化连线校验 |
+| Docker 执行 | 镜像检查/拉取、容器创建、启动、等待、日志收集、清理 | 可作为 Step runner 内核 |
+| Workspace | `/tmp/miniflow/workspaces/{pipeline-id}` 共享目录 | 符合产品核心执行模型 |
+| Git source | go-git checkout、凭据匹配、浅克隆基础 | 可升级为 `git.checkout` Step |
+| Secret | 本地 credentials JSON、secret 引用注入 env | 需要产品化 API 和 UI |
+| Cache | cache key 到目录挂载 | 需要 restore/save 语义和 key 模板 |
+| Log | 收集、脱敏、分类 | 可支撑运行态日志和诊断 |
+| AI/RAG | YAML seed、LLM 结构化诊断、降级模式 | 作为失败诊断能力保留 |
+| SQLite | pipeline result、exec context、diagnosis history | 需要扩展 run/artifact/cache 表 |
+| CLI | run、version、diagnose；validate 当前 flag 绑定需修复 | CLI 继续作为开发者入口 |
+| API | health、history、diagnose、fix suggest 骨架 | 需要真正 run API 和状态流 |
+| Worker | daemon skeleton | 后续作为分布式执行基础 |
 
-### ❌ 核心缺口
+### 2.2 关键过期认知修正
 
-| 缺口 | 影响 | 严重性 |
-|------|------|--------|
-| **无 Git 源码拉取** | 不能真正执行 CI/CD，只能模拟 | 🔴 致命 |
-| **全串行执行** | 多步骤管道速度慢 | 🟠 高 |
-| **无触发机制** | 不能自动响应代码变更 | 🟠 高 |
-| **无重试策略** | 偶发失败导致整体失败 | 🟡 中 |
-| **无密钥管理** | 密钥硬编码在 JSON 中不安全 | 🟡 中 |
-| **无条件执行** | 不能按分支/环境决定是否运行步骤 | 🟡 中 |
-| **CLI 功能薄弱** | 无法管理历史、查看日志、重试 | 🟢 低 |
-| **无通知机制** | 失败后只能通过 CLI 看到 | 🟢 低 |
-| **无工件管理** | 构建产物无法持久化保存 | 🟢 低 |
+旧文档中有几处需要统一修正：
+
+- “无 Git 源码拉取”已过期。当前已有 `internal/source` 实现，缺的是产品化 Step 和 UI。
+- “AI 原生是主线”需要降级为差异化能力。主线应是可视化流水线平台。
+- “自然语言编排”不应作为近期核心路径，应在 Step Registry 和图形化编辑器稳定后再做。
+- 当前 Go 版本以 `go.mod` 为准，为 Go 1.25。
+- Step timeout 字段和执行逻辑已有基础，缺的是完整 UI/API、管道级 timeout 和运行历史表达。
 
 ---
 
-## 3. 功能分层架构
+## 3. 功能分层
 
-```
- ┌──────────────────────────────────────────────────────────────────────┐
- │                         用户交互层（User Interface）                   │
- │                                                                      │
- │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌───────────────┐ │
- │  │  CLI 强化   │  │  Web UI    │  │  REST API  │  │  通知/回执    │ │
- │  │ run/list    │  │ 仪表盘     │  │ 管道 CRUD  │  │ Slack/Email   │ │
- │  │ rerun/logs  │  │ 日志流     │  │ 触发管理   │  │ Webhook       │ │
- │  │ trigger     │  │ 诊断视图   │  │ WebSocket  │  │ 飞书/钉钉     │ │
- │  └────────────┘  └────────────┘  └────────────┘  └───────────────┘ │
- └────────────────────────────┬─────────────────────────────────────────┘
-                              │
- ┌────────────────────────────▼─────────────────────────────────────────┐
- │                         调度执行层（Scheduler）                        │
- │                                                                      │
- │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌───────────────┐ │
- │  │ 并行执行   │  │ 触发引擎   │  │ 重试策略   │  │ 条件引擎      │ │
- │  │ 并发池     │  │ Webhook    │  │ 退避算法   │  │ when 表达式   │ │
- │  │ 资源限制   │  │ Cron       │  │ 最大次数   │  │ if 条件       │ │
- │  │ 全局/局部  │  │ API        │  │ 间隔       │  │ 审批门禁      │ │
- │  └────────────┘  └────────────┘  └────────────┘  └───────────────┘ │
- │                                                                      │
- │  ┌────────────┐  ┌────────────┐  ┌────────────┐                     │
- │  │ 分布式     │  │ 任务队列   │  │ 心跳/健康  │                     │
- │  │ Worker池   │  │ 优先级     │  │ 探活/下线  │                     │
- │  │ leader选举 │  │ 去重       │  │ 节点信息   │                     │
- │  └────────────┘  └────────────┘  └────────────┘                     │
- │                                                                      │
- │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌───────────────┐ │
- │  │ 超时控制   │  │ 优雅取消   │  │ 局部/全局  │  │ 状态机        │ │
- │  │ 步骤级     │  │ SIGTERM    │  │ 超时策略   │  │ pending→running│ │
- │  │ 管道级     │  │ 传播取消   │  │            │  │ →success/fail  │ │
- │  └────────────┘  └────────────┘  └────────────┘  └───────────────┘ │
- └────────────────────────────┬─────────────────────────────────────────┘
-                              │
- ┌────────────────────────────▼─────────────────────────────────────────┐
- │                         基础设施层（Infrastructure）                   │
- │                                                                      │
- │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌───────────────┐ │
- │  │ Git 集成   │  │ 工件管理   │  │ 密钥管理   │  │ 环境管理      │ │
- │  │ checkout   │  │ 上传/下载  │  │ secret     │  │ env 注入      │ │
- │  │ auth       │  │ S3/MinIO   │  │ 加密存储   │  │ 变量替换      │ │
- │  │ sparse     │  │ 跨管道共享 │  │ 运行时注入 │  │ 多环境        │ │
- │  └────────────┘  └────────────┘  └────────────┘  └───────────────┘ │
- │                                                                      │
- │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌───────────────┐ │
- │  │ 镜像管理   │  │ 网络策略   │  │ 存储后端   │  │ 插件系统      │ │
- │  │ 预热       │  │ 隔离       │  │ 本地/S3    │  │ 自定义步骤    │ │
- │  │ 清理       │  │ 代理       │  │ 去重       │  │ hooks          │ │
- │  │ 缓存       │  │            │  │            │  │               │ │
- │  └────────────┘  └────────────┘  └────────────┘  └───────────────┘ │
- └──────────────────────────────────────────────────────────────────────┘
+```text
+┌───────────────────────────────────────────────┐
+│ 用户交互层                                      │
+│ Visual editor / CLI / API / Run view           │
+└───────────────────────┬───────────────────────┘
+                        │
+┌───────────────────────▼───────────────────────┐
+│ 产品模型层                                      │
+│ Pipeline / Typed Step / DAG / Validation        │
+└───────────────────────┬───────────────────────┘
+                        │
+┌───────────────────────▼───────────────────────┐
+│ 调度执行层                                      │
+│ Scheduler / Retry / Timeout / Approval / Rerun  │
+└───────────────────────┬───────────────────────┘
+                        │
+┌───────────────────────▼───────────────────────┐
+│ 执行环境层                                      │
+│ Docker / Workspace / Cache / Artifact / Secret  │
+└───────────────────────┬───────────────────────┘
+                        │
+┌───────────────────────▼───────────────────────┐
+│ 可观测与智能辅助层                              │
+│ Logs / History / Sanitizer / Classifier / RAG   │
+└───────────────────────────────────────────────┘
 ```
 
 ---
 
-## 4. 基础设施层 — 详细分析
+## 4. 基础 Step 原语
 
-### 4.1 Git 源码集成 ⭐ 最高优先级
+基础 Step 应只覆盖平台能力，不承载业务流程。
 
-#### 需求
+### 4.1 MVP Step
 
-CI/CD 引擎的核心——没有代码拉取能力，就不能叫 CI/CD。当前 `examples/go-ci.json` 的 `checkout` 步骤只是 `echo` 模拟。
+| Step | 类型 | 作用 | 优先级 |
+|------|------|------|--------|
+| Git Checkout | `git.checkout` | 拉取代码到 workspace | P0 |
+| Shell Script | `script.run` | 用户自定义脚本执行 | P0 |
+| File Operation | `file.operation` | copy/move/delete/mkdir/archive/extract | P1 |
+| Cache Restore | `cache.restore` | 恢复依赖缓存 | P1 |
+| Cache Save | `cache.save` | 保存依赖缓存 | P1 |
+| Artifact Save | `artifact.save` | 保存构建产物或报告 | P1 |
+| Artifact Restore | `artifact.restore` | 恢复上游或历史产物 | P1 |
+| Docker Build | `docker.build` | 构建镜像 | P1 |
+| Docker Push | `docker.push` | 推送镜像 | P2 |
+| HTTP Request | `http.request` | 调 webhook/API | P2 |
+| Manual Approval | `approval.manual` | 人工确认门禁 | P2 |
+| Notification Webhook | `notify.webhook` | 通用通知 | P2 |
 
-#### 设计方案
+### 4.2 延后 Step
 
-**方案 A：内建 `checkout` 特殊步骤**
+这些能力有价值，但不应进入第一版基础平台：
 
-```json
-{
-  "steps": [
-    {
-      "name": "checkout",
-      "uses": "checkout@v1",
-      "with": {
-        "repository": "github.com/kexer2018/miniflow",
-        "ref": "main",
-        "ssh_key": "${{ secrets.GIT_SSH_KEY }}",
-        "shallow": true,
-        "depth": 50
-      }
-    }
-  ]
-}
-```
+- Kubernetes apply
+- Helm deploy
+- SSH deploy
+- Docker compose deploy
+- Matrix build
+- Parallel group
+- Conditional branch
+- SaaS-specific notification
 
-实现方式：
-- `uses` 字段标记为内建动作，不走 Docker 容器
-- 引擎内部调用 git CLI（通过 `os/exec`）或 go-git 库
-- 在 workspace 中 checkout 代码
-
-**方案 B：注入 git 容器步骤**
-
-```json
-{
-  "steps": [
-    {
-      "name": "checkout",
-      "image": "alpine/git:latest",
-      "commands": [
-        "git clone --depth 50 --branch main git@github.com:kexer2018/miniflow.git /workspace"
-      ],
-      "env": ["GIT_SSH_KEY=${{ secrets.GIT_SSH_KEY }}"]
-    }
-  ]
-}
-```
-
-**推荐方案 A**：
-- 更好的 UX（不需要用户写 git 命令）
-- 能自动处理认证、SSH key 注入、submodule 等复杂性
-- 未来可以内置缓存优化（如 `--reference`）
-
-#### 认证方式
-
-| 方式 | 适用场景 | 实现 |
-|------|----------|------|
-| SSH key | 私有仓库 | 写入临时 SSH key，`ssh-agent` 注入容器 |
-| Token | GitHub/GitLab API | `Authorization: Bearer` header |
-| HTTP Basic | 自托管 Git | 嵌入 URL |
-| OAuth | CI 触发场景 | 通过 webhook payload 携带 |
-
-#### 性能优化
-
-- Shallow clone（`--depth 1`）—— 默认选项
-- 稀疏 checkout（仅取需要的目录）
-- 文件变更列表（`git diff --name-only HEAD~1`）用于条件触发
+它们要么更接近业务/部署适配器，要么需要更成熟的调度状态机。
 
 ---
 
-### 4.2 工件（Artifact）管理
+## 5. Step Spec 演进
 
-#### 需求
+### 5.1 兼容现有格式
 
-构建产物需要持久化保存、跨步骤传递、跨管道共享。
-
-#### 设计方案
+现有格式继续可用：
 
 ```json
 {
-  "steps": [
-    {
-      "name": "build",
-      "image": "golang:1.23-alpine",
-      "commands": ["go build -o /workspace/bin/app ."],
-      "artifacts": {
-        "paths": ["/workspace/bin/"],
-        "retention_days": 30
-      }
-    }
-  ]
+  "name": "test",
+  "image": "golang:1.25",
+  "commands": ["go test ./..."],
+  "depends_on": ["checkout"]
 }
 ```
 
-#### 存储后端
+### 5.2 新 typed step 格式
 
-| 后端 | 优点 | 缺点 |
+新增 `type` 和 `with`：
+
+```json
+{
+  "name": "test",
+  "type": "script.run",
+  "image": "golang:1.25",
+  "depends_on": ["checkout"],
+  "with": {
+    "workdir": "/workspace",
+    "shell": "sh",
+    "script": "go test ./... -count=1"
+  }
+}
+```
+
+后端编译流程：
+
+```text
+PipelineSpec
+  → Step Type Registry 校验
+  → Typed Step 编译
+  → internal/pipeline.Step
+  → container.Config
+  → Docker 执行
+```
+
+### 5.3 Step Type Registry
+
+注册表是产品化的关键后端能力。
+
+它需要提供：
+
+- Step 类型列表
+- Step 分组、图标、描述
+- `with` 参数 JSON Schema
+- 默认值
+- 参数校验
+- 编译函数
+- 示例配置
+
+前端不应该硬编码 Step 表单，而应该优先从 Registry 获取 schema，再渲染合适控件。
+
+---
+
+## 6. 前端产品形态
+
+### 6.1 四区布局
+
+```text
+┌──────────────┬──────────────────────────┬──────────────────┐
+│ Step palette │        DAG canvas         │ Step inspector   │
+│              │                          │                  │
+│ Source       │  checkout → test → build  │ Basics           │
+│ Script       │                  ↘ push   │ Configure        │
+│ Files        │                          │ Env & secrets    │
+│ Cache        │                          │ Inputs/outputs   │
+│ Artifacts    │                          │ Policy           │
+│ Docker       │                          │ Advanced         │
+│ Integration  │                          │                  │
+└──────────────┴──────────────────────────┴──────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│ Run timeline / logs / validation problems                  │
+└────────────────────────────────────────────────────────────┘
+```
+
+### 6.2 Step Palette
+
+- 按 Source、Script、Files、Cache、Artifacts、Docker、Integration、Control 分组。
+- 支持搜索和拖拽创建节点。
+- 点击 Step 展示简短说明、输入输出和示例。
+
+### 6.3 DAG Canvas
+
+- 画布节点表达 Step。
+- 连线表达 `depends_on`。
+- 建线时实时检测循环依赖。
+- 运行时节点直接显示 pending/running/success/failed/skipped/waiting。
+
+### 6.4 Step Inspector
+
+右侧配置面板推荐 tab：
+
+| Tab | 内容 |
+|-----|------|
+| Basics | 名称、类型、描述 |
+| Configure | 当前 Step 类型参数 |
+| Environment | env、secrets、credentials |
+| Inputs & outputs | cache、artifacts、workspace |
+| Policy | timeout、retry、continue on error |
+| Advanced | entrypoint、network、raw spec |
+
+### 6.5 输入控件原则
+
+- Step name 用普通 input，实时校验唯一性。
+- Image 用 combobox，既提供建议也允许自由输入。
+- Script 用代码编辑器，不用普通 textarea。
+- Env 用 key/value 表格。
+- Secrets 用 picker，只显示引用名。
+- Depends on 以画布连线为主，Inspector 只读展示。
+- Cache key 用 builder，支持 checksum 插入。
+- Artifact path 支持 glob 和运行后预览。
+- HTTP body 用代码编辑器。
+- Timeout/retry 用数字输入、stepper、toggle。
+
+---
+
+## 7. 后端产品化缺口
+
+| 能力 | 缺口 | 说明 |
 |------|------|------|
-| 本地磁盘 | 零依赖，简单 | 不持久（容器重启丢失） |
-| 挂载卷 | 持久化，简单 | 不能共享到其他机器 |
-| MinIO / S3 | 分布式，可共享 | 需要外部服务 |
-| SQLite BLOB | 统一存储 | 大文件性能差 |
-
-**建议路线**：本地磁盘 → 挂载卷 → S3/MinIO（渐进增强）
-
-#### 关键功能
-
-- `upload` / `download` 动作（与 `commands` 同级）
-- 自动文件 glob 匹配
-- 去重（content hash）
-- 清理策略（TTL / 保留数量）
-- 跨管道引用（`from_pipeline`）
+| Step Registry | 缺失 | 前后端统一 Step schema 和编译逻辑 |
+| Typed Step | 缺失 | 当前仍以 commands 为中心 |
+| Run API | 缺失 | API 目前不真正执行 pipeline |
+| 实时状态 | 缺失 | 前端需要 SSE/WebSocket |
+| 日志流 | 部分缺失 | collector 有基础，但需要按 run/step 推送 |
+| Artifact | 缺失 | 当前只有 workspace，没有持久化产物 |
+| Cache | 部分缺失 | 有挂载，缺 restore/save 和 key 模板 |
+| Secret API | 缺失 | 当前主要是文件型 credentials |
+| Rerun | 缺失 | 需要从失败 Step 重跑和全量重跑 |
+| Validation API | 缺失 | 图形化编辑时需要实时校验 |
 
 ---
 
-### 4.3 密钥（Secret）管理
+## 8. AI 能力定位
 
-#### 需求
+AI 仍然重要，但不是第一入口。
 
-管道中的密码、token、key 不应该出现在 JSON/YAML 明文里。
+近期 AI 能力应该聚焦：
 
-#### 设计方案
+1. 失败日志诊断。
+2. 配置字段建议。
+3. 根据错误建议修改 Step 参数。
+4. 对 pipeline spec 做解释和风险提示。
 
-**Spec 层定义：**
+延后能力：
 
-```json
-{
-  "secrets": {
-    "DOCKER_USERNAME": "${{ env.DOCKER_USERNAME }}",
-    "DOCKER_PASSWORD": "${{ secrets.DOCKER_PASSWORD_FILE }}",
-    "GIT_SSH_KEY": "${{ file.ssh_key }}"
-  },
-  "steps": [
-    {
-      "name": "login",
-      "image": "docker:latest",
-      "commands": ["docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD"],
-      "secrets": ["DOCKER_USERNAME", "DOCKER_PASSWORD"]
-    }
-  ]
-}
-```
+1. 自然语言生成整条流水线。
+2. 自动修改并执行修复。
+3. 自动生成任意脚本并运行。
 
-#### 注入来源优先级
-
-```
-CLI --secret KEY=VAL > 环境变量 SECRETS_* > vault.enc 文件 > 密钥管理服务
-```
-
-#### 安全措施
-
-- 日志脱敏（已有 sanitizer，需扩展 pattern 覆盖 secret 名称）
-- 内存零值覆写（`defer zero(secret)`）
-- 文件权限 `0600`
-- 仅注入明确引用的步骤
+原因：产品早期最需要可靠的执行与可视化编辑。AI 编排必须建立在稳定 Step Registry、Validation API、Run API 和用户确认机制之上。
 
 ---
 
-### 4.4 环境管理
+## 9. 推荐路线
 
-#### 需求
+### Phase 1: 稳定现有执行内核
 
-```json
-{
-  "env": {
-    "GO_VERSION": "1.23",
-    "NODE_ENV": "production"
-  },
-  "steps": [
-    {
-      "name": "build",
-      "image": "golang:${GO_VERSION}-alpine",
-      "commands": ["go version"]
-    }
-  ]
-}
-```
+- 修复 CLI `validate -f` flag 问题。
+- 确认 Go 版本文档与 `go.mod` 一致。
+- 保持现有 spec 兼容。
+- 补充 Docker 可用时的端到端示例验证。
 
-#### 变量替换
+### Phase 2: Step 类型系统
 
-- `${{ env.VAR }}` — spec 层模板替换
-- `${VAR}` — 运行时 shell 变量（传给容器）
-- 支持嵌套、条件默认值
+- 引入 `type` 和 `with`。
+- 建立 Step Type Registry。
+- 首批实现 `script.run` 和 `git.checkout`。
+- API 暴露 Step 类型和表单 schema。
 
----
+### Phase 3: 产品化运行 API
 
-## 5. 调度执行层 — 详细分析
+- 创建 run。
+- 查询 run/step 状态。
+- 取消 run。
+- 日志流。
+- 运行历史。
+- validation API。
 
-### 5.1 并行执行引擎
+### Phase 4: 产物、缓存、密钥
 
-#### 需求
+- Artifact save/restore。
+- Cache restore/save。
+- Secret 管理 API。
+- UI 显示 cache hit/miss 和 artifact 列表。
 
-拓扑排序后，同一 DAG 层次的无依赖步骤应该并发执行以提升速度。
+### Phase 5: 可视化编辑器
 
-```
-当前：  checkout → test → build → deploy   （全串行，慢）
-目标：  checkout → [test, lint] → build → deploy  （test 和 lint 并行）
-```
+- Step palette。
+- DAG canvas。
+- Step inspector。
+- Bottom logs/timeline panel。
+- Raw spec preview。
 
-#### 算法
+### Phase 6: 集成和控制类 Step
 
-```
-1. TopologicalSort() 生成分层列表
-2. 每层中的步骤无依赖关系，可以并发运行
-3. 并发池控制最大并行数（max_concurrency）
-4. 层的所有步骤完成后，进入下一层
-```
-
-#### 并发控制
-
-```json
-{
-  "concurrency": {
-    "max_concurrency": 4,
-    "cancel_in_progress": true
-  }
-}
-```
-
-| 参数 | 说明 | 默认 |
-|------|------|------|
-| `max_concurrency` | 最大并行步骤数 | CPU 核心数 |
-| `cancel_in_progress` | 新触发时取消正在运行的 | `false` |
-| `group` | 并发分组（同名组共享限制） | 无 |
-
-#### 资源限制
-
-- 每步 CPU/Memory 限制（Docker 原生支持）
-- 全局资源池（防止容器撑爆宿主机）
-- 资源预留（高优先级步骤保证资源）
+- Docker build/push。
+- HTTP request。
+- Manual approval。
+- Notification webhook。
 
 ---
 
-### 5.2 触发引擎
-
-#### 需求
-
-当前只有手动 CLI 运行，真正的 CI/CD 需要自动触发。
-
-#### 触发类型
-
-```
-┌────────────────────────────────────────────┐
-│              触发引擎                       │
-│                                            │
-│  外部事件 ──→ Webhook Listener             │
-│  定时     ──→ Cron Scheduler               │
-│  API      ──→ REST API / gRPC              │
-│  上游完成 ──→ Pipeline Completion Hook     │
-│  手动     ──→ CLI / UI                     │
-│                                            │
-│  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐  │
-│  │去重   │  │频率  │  │分支   │  │路径   │  │
-│  │去重   │  │限制   │  │过滤   │  │过滤   │  │
-│  └──────┘  └──────┘  └──────┘  └──────┘  │
-└────────────────────────────────────────────┘
-```
-
-#### Spec 定义
-
-```json
-{
-  "on": {
-    "push": {
-      "branches": ["main", "release/*"],
-      "paths": ["src/**", "!docs/**"],
-      "tags": ["v*"]
-    },
-    "pull_request": {
-      "branches": ["main"],
-      "types": ["opened", "synchronize"]
-    },
-    "schedule": [
-      { "cron": "0 6 * * 1", "timezone": "Asia/Shanghai" }
-    ],
-    "workflow_dispatch": {
-      "inputs": {
-        "environment": { "type": "choice", "options": ["dev", "staging", "prod"] }
-      }
-    }
-  }
-}
-```
-
-#### Webhook 处理器
-
-| 平台 | 认证 | 事件格式 |
-|------|------|----------|
-| GitHub | Webhook Secret + HMAC 校验 | Push, Pull Request, Release |
-| GitLab | Token + IP 白名单 | Push, Merge Request, Tag |
-| Gitea | Token | Push, Pull Request |
-| 通用 HTTP | Bearer Token | JSON body → 自定义映射 |
-
-**最小实现**：先支持 GitHub webhook，通过监听 → 解析 payload → 匹配 `on` 条件 → 触发管道。
-
----
-
-### 5.3 重试策略
-
-#### 需求
-
-网络抖动、镜像拉取超时、临时资源争用——偶发失败不应该导致整个管道失败。
-
-#### Spec 定义
-
-```json
-{
-  "steps": [
-    {
-      "name": "test",
-      "image": "golang:1.23-alpine",
-      "commands": ["go test ./..."],
-      "retry": {
-        "max_attempts": 3,
-        "backoff": "exponential",
-        "initial_interval": "5s",
-        "max_interval": "60s",
-        "retry_on": [1, 125, 137, 255],
-        "retry_when": ["infra_error", "timeout"]
-      }
-    }
-  ]
-}
-```
-
-#### 退避策略
-
-| 策略 | 说明 | 适用场景 |
-|------|------|----------|
-| `immediate` | 立即重试 | 并发竞争 |
-| `fixed` | 固定间隔 | 资源等待 |
-| `exponential` | 指数退避 | 网络/限流 |
-| `jittered` | 指数退避 + 随机抖动 | 大规模重试 |
-
-#### 重试条件
-
-- **按退出码**：`retry_on` 列表
-- **按分类**：`infra_error` 自动重试，`app_error` 不重试
-- **按超时**：超时失败可以重试
-- **自定义**：`retry_when` 表达式
-
----
-
-### 5.4 条件执行引擎
-
-#### 需求
-
-按分支、环境、前一步输出决定是否执行某一步。
-
-#### Spec 定义
-
-```json
-{
-  "steps": [
-    {
-      "name": "deploy-prod",
-      "image": "alpine:latest",
-      "commands": ["deploy.sh"],
-      "if": "branch == 'main' && env == 'production'"
-    },
-    {
-      "name": "notify",
-      "image": "alpine:latest",
-      "commands": ["echo 'build failed'"],
-      "if": "failure()"   // 仅在管道失败时执行
-    }
-  ]
-}
-```
-
-#### 条件表达式
-
-| 表达式 | 说明 |
-|--------|------|
-| `branch == 'main'` | 当前分支 |
-| `tag =~ 'v.*'` | 标签匹配正则 |
-| `env == 'production'` | 环境变量 |
-| `steps.test.status == 'success'` | 前一步状态 |
-| `steps.build.exit_code == 0` | 前一步退出码 |
-| `failure()` | 管道中的任意一步失败 |
-| `success()` | 所有前置步骤成功 |
-| `always()` | 无论成功失败都执行 |
-| `changed('src/**')` | 指定路径有变更 |
-
-#### 内置函数
-
-- `success()` / `failure()` / `always()` / `cancelled()`
-- `changed(path)` — 仅 PR/Push 场景
-- `env(key)` — 环境变量
-- `contains(list, val)` — 列表包含
-
----
-
-### 5.5 超时控制
-
-#### 需求
-
-当前有 `Step.Timeout` 字段，但没有管道级超时和 CLI 暴露。
-
-#### 设计方案
-
-```json
-{
-  "timeout": 600,
-  "steps": [
-    {
-      "name": "long-test",
-      "timeout": 120
-    }
-  ]
-}
-```
-
-| 级别 | 字段 | 默认 | 行为 |
-|------|------|------|------|
-| 管道级 | `timeout` | 3600s | 超时 → 取消所有运行中步骤 |
-| 步骤级 | `steps[].timeout` | 继承管道 | 超时 → 取消该步骤 |
-| 全局默认 | `--default-timeout` | 3600s | CLI/Config 配置 |
-
----
-
-### 5.6 分布式执行（Phase 2 完整形态）
-
-```
-┌────────────────────────────────────────────┐
-│               Control Plane                │
-│                                            │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐ │
-│  │ 任务调度  │  │ 节点管理  │  │ API Gateway│
-│  │ 排队+分发 │  │ 注册+健康 │  │ REST/gRPC│
-│  └──────────┘  └──────────┘  └──────────┘ │
-└─────────────────┬──────────────────────────┘
-                  │  gRPC / NATS / Redis 队列
-    ┌─────────────┼─────────────┐
-    ▼             ▼             ▼
-┌──────────┐ ┌──────────┐ ┌──────────┐
-│ Worker 1 │ │ Worker 2 │ │ Worker 3 │
-│ 执行步骤  │ │ 执行步骤  │ │ 执行步骤  │
-└──────────┘ └──────────┘ └──────────┘
-```
-
-**当前 `cmd/worker/`** 已经有骨架代码，可以直接朝这个方向演进。
-
----
-
-## 6. 用户交互层 — 详细分析
-
-### 6.1 CLI 强化
-
-#### 当前命令
-
-```
-miniflow                  # 执行管道
-miniflow validate -f ...  # 校验管道
-miniflow diagnose ...      # AI 诊断日志
-miniflow version          # 版本
-```
-
-#### 目标命令集
-
-```
-miniflow
-├── run          <file>                    # 执行管道（已有）
-├── validate     <file>                    # 校验管道定义（已有）
-├── diagnose     --step --log              # AI 诊断（已有）
-│
-├── list         [--limit] [--status]      # 查看执行历史（新增）
-├── logs         <run-id> [--step]         # 查看步骤日志（新增）
-├── status       <run-id>                  # 查看执行状态（新增）
-├── rerun        <run-id> [--step]         # 重新执行（新增）
-├── cancel       <run-id>                  # 取消执行（新增）
-│
-├── trigger      --event push              # 手动触发 webhook（新增）
-├── secret       set/get/rm                # 密钥管理（新增）
-│
-├── version                                # 版本（已有）
-└── help                                   # 帮助
-```
-
-#### 输出格式
-
-| 标志 | 说明 |
-|------|------|
-| `--output json` | JSON 格式（适合脚本消费） |
-| `--output table` | 表格格式（默认） |
-| `--output ansi` | ANSI 彩色（当前风格） |
-
----
-
-### 6.2 Web UI（Phase 2）
-
-> 当前 `internal/api/` 有 REST 骨架（6 路由），可以在此基础上构建。
-
-#### 页面规划
-
-```
-Dashboard
-├── 管道列表（状态、时间、触发方式）
-├── 实时执行状态（WebSocket 推送）
-├── 查看步骤日志（流式）
-├── 诊断结果可视化（图表/卡片）
-├── 历史趋势（成功/失败率）
-└── 管道配置编辑器（JSON/YAML 编辑器 + 语法校验）
-```
-
-#### 技术栈建议
-
-| 层 | 技术 | 理由 |
-|------|------|------|
-| API 框架 | `chi` 或 `gin` | `http.ServeMux` 够用但缺中间件生态 |
-| WebSocket | `gorilla/websocket` | 实时日志推送 |
-| 前端 | 独立 SPA（React/Vue），或嵌入式 htmx | 看团队技术栈 |
-| 认证 | Session / JWT / OAuth2 Proxy | 最少初始方案：静态 Token |
-
----
-
-### 6.3 通知集成
-
-#### 需求
-
-管道完成或失败时，主动通知相关人员。
-
-#### 设计
-
-```json
-{
-  "notifications": [
-    {
-      "on": ["failure", "success"],
-      "to": {
-        "type": "slack",
-        "webhook_url": "${{ secrets.SLACK_WEBHOOK }}",
-        "channel": "#ci-alerts"
-      }
-    },
-    {
-      "on": ["failure"],
-      "to": {
-        "type": "email",
-        "recipients": ["team@example.com"]
-      }
-    }
-  ]
-}
-```
-
-#### 通知渠道（按优先级）
-
-| 渠道 | 实现方式 | 优先级 |
-|------|----------|--------|
-| Slack | Incoming Webhook | ⭐ 第一优先 |
-| 飞书 | Webhook | ⭐ |
-| 钉钉 | Webhook | ⭐ |
-| Email | SMTP | 🟡 |
-| WebSocket | UI 内实时通知 | 🟡 |
-| 自定义 | `webhook_url` 通用回调 | 🟢 |
-
----
-
-## 7. AI Native 差异化能力
-
-这是 miniflow 与 Jenkins/GitHub Actions 最大的不同点。AI 不是附加功能，而是内建在核心流程中的。
-
-### 7.1 智能诊断（已实现 ✅）
-
-```
-失败 → 脱敏 → 分类 → RAG 匹配 → LLM 分析 → 输出根因+修复
-```
-
-已有：快速路径、降级、结构化输出。维持现有设计，持续优化。
-
-### 7.2 智能重试（新增）
-
-```
-失败 → 分类
-  ├── app_error（代码 bug）→ 不重试，触发 AI 诊断
-  ├── infra_error（基础设施）→ 自动重试（指数退避）
-  ├── timeout → 重试（更长的超时）
-  └── unknown → LLM 判断是否值得重试
-```
-
-AI 判断是否重试比固定规则更聪明：
-```json
-{
-  "retry": {
-    "ai_decision": true,
-    "max_attempts": 3
-  }
-}
-```
-
-当 `ai_decision: true` 时，每次失败后调用 LLM 判断：
-- 是临时问题 → 重试
-- 是代码 bug → 生成诊断，不重试
-- 不确定 → 保守重试一次
-
-### 7.3 自动修复执行（已有基础）
-
-当前 `fix_suggestion` 包含 `config_override_example`，可以更进一步：
-
-```
-诊断完成 → 有修复建议 → 置信度 ≥ 0.85 → 用户确认 → 自动执行修复
-                                              → 自动重新运行
-```
-
-```json
-{
-  "auto_fix": {
-    "enabled": true,
-    "min_confidence": 0.85,
-    "require_approval": true,
-    "max_iterations": 3
-  }
-}
-```
-
-### 7.4 动态 RAG（优化）
-
-当前种子是静态的（内置 17 个 + YAML 文件），可以做得更智能：
-
-```
-诊断完成
-  ├── 高置信度 → 根因 + 日志模式 → 自动生成新种子 → 加入本地种子库
-  ├── 低置信度 → 存入候选库 → 人工审核后加入种子库
-  └── 重复问题 → 更新已有种子评分/优先级
-```
-
-### 7.5 多步骤联合诊断（新增）
-
-当前 `diagnose` 只分析单一步骤的日志，但很多故障需要跨步骤分析：
-
-```
-场景：
-  step-1: build → 成功
-  step-2: test → 失败，日志显示 "package not found"
-  
-联合诊断：
-  检查 step-1 的输出 + step-2 的日志
-  → 根因：build 步骤未正确安装依赖
-  → step-1 标记为 "suspect"，step-2 是 "symptom"
-```
-
-### 7.6 Prompt 优化
-
-当前 Chinese prompt 是好的开始，可以持续优化：
-
-- 内置多语言模板（zh-CN / en-US）
-- 根据 `$LANG` 自动选择
-- 系统 prompt 定期通过单元测试验证输出结构
-- 不同分类场景使用不同 prompt 模板
-
----
-
-## 8. Spec 演进设计
-
-### 8.1 版本升级路线
-
-```
-v1.0（当前 JSON 格式）
-│
-├── + source        # 源码定义
-├── + secrets       # 密钥声明
-├── + env           # 环境变量
-├── + on            # 触发条件
-├── + timeout       # 管道级超时
-├── + concurrency   # 并发控制
-├── + notifications # 通知配置
-│
-v2.0（扩展格式）
-│
-├── uses 动作系统    # 内建动作 + 自定义步骤
-├── artifacts       # 工件声明
-├── retry            # 重试策略
-├── when/if          # 条件执行
-├── 嵌套步骤         # 步骤组
-├── 矩阵执行         # 多版本并行测试
-│
-v3.0（高级）
-├── 参数化管道       # 输入参数
-├── 环境部署门禁     # 审批流程
-├── AI 策略         # ai_decision 等
-└── 自定义插件       # 插件注册
-```
-
-### 8.2 JSON Schema 演进
-
-建议为每个 spec 版本维护 JSON Schema，提供：
-- 编辑器自动补全
-- 静态校验（`miniflow validate`）
-- AI 辅助生成
-
-当前的 `Validate()` 函数可以逐步扩展为 Schema 校验。
-
----
-
-## 9. 推荐实施路线
-
-### 三阶段路线
-
-```
-第一阶段：CI/CD 可用
-├── Git 源码拉取（checkout 内建动作）        ⏱ 1-2 周
-├── 并行执行引擎（同层并发）                  ⏱ 1-2 周
-├── 密钥注入（env + secret 分离）             ⏱ 1 周
-├── 重试策略（指数退避）                      ⏱ 1 周
-├── 步骤超时 CLI 暴露                         ⏱ 2 天
-└── CI/CD 自己跑起来（dogfooding）             ⏱ 持续
-
-第二阶段：CI/CD 好用
-├── 触发引擎（GitHub Webhook → 自动运行）     ⏱ 2 周
-├── CLI 强化（list / logs / rerun / cancel）  ⏱ 1 周
-├── 条件执行（when / if 表达式引擎）          ⏱ 1-2 周
-├── 工件管理（本地存储 → MinIO）              ⏱ 1-2 周
-├── 通知集成（Slack / 飞书 / Email）          ⏱ 1 周
-└── 管道历史管理（SQLite 扩展 + 清理策略）     ⏱ 3 天
-
-第三阶段：AI Native 差异化
-├── 智能重试（AI 判断重试 vs 诊断）            ⏱ 1 周
-├── 自动修复执行（应用 config_override）      ⏱ 1-2 周
-├── 动态 RAG（诊断结果 → 新种子）              ⏱ 1 周
-├── 多步骤联合诊断                            ⏱ 2 周
-├── 置信度升级 / 人工审批集成                  ⏱ 1 周
-└── Web UI 仪表盘（Phase 2）                   ⏱ 3-4 周
-```
-
-### 推荐优先级矩阵
-
-```
-                      高价值              中价值              低价值
- ┌─────────────────────────────────────────────────────────────────
- │
- 易实施  │  Git checkout        密钥管理          通知集成
-        │  并行执行             step 超时         CLI list/logs
-        │  重试策略             条件执行
- │
- 中实施  │  工件管理            定时触发          审批门禁
-        │  Webhook 触发         Smart Retry
- │
- 难实施  │  自动修复执行         分布式 Worker      Web UI
-        │  多步骤诊断           动态 RAG
- │
-```
-
----
-
-## 10. 附录：真实 CI 管道完整示例
-
-### Go 项目完整 CI 管道
-
-```json
-{
-  "version": "2.0",
-  "name": "go-ci-full",
-  "workspace": "/workspace",
-
-  "source": {
-    "repository": "github.com/myorg/myapp",
-    "ref": "${{ github.ref_name }}",
-    "token": "${{ secrets.GIT_TOKEN }}"
-  },
-
-  "secrets": {
-    "DOCKER_USERNAME": "${{ env.REGISTRY_USER }}",
-    "DOCKER_PASSWORD": "${{ secrets.REGISTRY_PASSWORD }}",
-    "SLACK_WEBHOOK": "${{ secrets.SLACK_CI_WEBHOOK }}"
-  },
-
-  "env": {
-    "GO_VERSION": "1.23",
-    "NODE_VERSION": "22"
-  },
-
-  "on": {
-    "push": { "branches": ["main", "release/*"] },
-    "pull_request": { "branches": ["main"] },
-    "schedule": [{ "cron": "0 2 * * 1", "timezone": "Asia/Shanghai" }]
-  },
-
-  "concurrency": {
-    "max_concurrency": 4,
-    "cancel_in_progress": true
-  },
-
-  "timeout": 1800,
-
-  "notifications": [
-    {
-      "on": ["failure"],
-      "to": { "type": "slack", "webhook_url": "${{ secrets.SLACK_WEBHOOK }}", "channel": "#ci-alerts" }
-    },
-    {
-      "on": ["success"],
-      "to": { "type": "email", "recipients": ["team@example.com"] }
-    }
-  ],
-
-  "steps": [
-    {
-      "name": "checkout",
-      "uses": "checkout@v1",
-      "with": {
-        "shallow": true,
-        "depth": 50,
-        "submodules": true
-      }
-    },
-
-    {
-      "name": "lint",
-      "image": "golang:${GO_VERSION}-alpine",
-      "commands": [
-        "go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest",
-        "golangci-lint run ./... --timeout=5m"
-      ],
-      "retry": { "max_attempts": 2, "backoff": "fixed", "interval": "10s" },
-      "timeout": 300
-    },
-
-    {
-      "name": "vet",
-      "image": "golang:${GO_VERSION}-alpine",
-      "commands": ["go vet ./..."],
-      "timeout": 120
-    },
-
-    {
-      "name": "test-unit",
-      "image": "golang:${GO_VERSION}-alpine",
-      "commands": ["go test ./... -race -count=1 -coverprofile=coverage.out -timeout=120s"],
-      "timeout": 180
-    },
-
-    {
-      "name": "build",
-      "image": "golang:${GO_VERSION}-alpine",
-      "commands": ["CGO_ENABLED=0 go build -ldflags='-s -w' -o /workspace/bin/app ."],
-      "depends_on": ["lint", "vet", "test-unit"],
-      "retry": { "max_attempts": 2, "backoff": "exponential" },
-      "timeout": 300,
-      "artifacts": {
-        "paths": ["/workspace/bin/"],
-        "retention_days": 30
-      }
-    },
-
-    {
-      "name": "docker-build",
-      "image": "docker:latest",
-      "commands": [
-        "docker build -t myapp:latest .",
-        "docker tag myapp:latest registry.example.com/myapp:${{ github.sha }}",
-        "docker push registry.example.com/myapp:${{ github.sha }}"
-      ],
-      "depends_on": ["build"],
-      "env": ["DOCKER_USERNAME", "DOCKER_PASSWORD"],
-      "secrets": ["DOCKER_USERNAME", "DOCKER_PASSWORD"],
-      "if": "branch == 'main'",
-      "timeout": 600
-    },
-
-    {
-      "name": "deploy-staging",
-      "image": "alpine:latest",
-      "commands": ["echo 'Deploying to staging...'", "curl -X POST https://deploy.example.com/staging"],
-      "depends_on": ["docker-build"],
-      "if": "branch == 'main'"
-    },
-
-    {
-      "name": "deploy-production",
-      "image": "alpine:latest",
-      "commands": ["echo 'Deploying to production...'", "curl -X POST https://deploy.example.com/prod"],
-      "depends_on": ["docker-build"],
-      "if": "startsWith(github.ref_name, 'release/')",
-      "timeout": 600,
-      "retry": { "max_attempts": 3, "backoff": "jittered" }
-    },
-
-    {
-      "name": "notify-success",
-      "image": "alpine:latest",
-      "commands": ["echo 'Pipeline completed successfully!'"],
-      "depends_on": ["deploy-staging", "deploy-production"],
-      "if": "success()"
-    },
-
-    {
-      "name": "notify-failure",
-      "image": "alpine:latest",
-      "commands": ["echo 'Pipeline failed! Triggering AI diagnosis...'"],
-      "depends_on": ["test-unit", "lint", "vet", "build"],
-      "if": "failure()"
-    }
-  ]
-}
-```
-
-### 最小可用管道（快速验证）
-
-```json
-{
-  "version": "1.0",
-  "name": "quick-check",
-  "source": {
-    "repository": "github.com/kexer2018/miniflow",
-    "ref": "main"
-  },
-  "steps": [
-    { "name": "checkout", "uses": "checkout@v1" },
-    { "name": "test", "image": "golang:1.23-alpine", "commands": ["go test ./... -short -count=1"] },
-    { "name": "build", "image": "golang:1.23-alpine", "commands": ["go build ./..."], "depends_on": ["test"] }
-  ]
-}
-```
-
----
-
-> **下一步**: 本分析文档已经涵盖了 miniflow 作为 CI/CD 系统的完整功能画像。团队可以根据优先级和资源决定从哪个模块开始实施。
->
-> 建议第一优先级实现 **Git 源码拉取** + **并行执行引擎**，让 pipeline 跑真正的 Go 项目而不是 `echo` 模拟。
+## 10. 成功标准
+
+第一版产品化闭环应满足：
+
+1. 用户可以在 UI 里创建流水线。
+2. 用户可以拖拽基础 Step 并连线。
+3. 用户可以配置镜像、脚本、env、secrets、cache、artifacts。
+4. 前端能实时提示 DAG 和字段错误。
+5. 后端能执行 pipeline 并返回 step 状态。
+6. 日志能按 step 实时查看。
+7. 失败 step 能展示脱敏日志和诊断建议。
+8. 产物能保存并在 UI 中下载。
+
+这组目标完成后，miniflow 才真正从“CLI 执行器”进入“可视化流水线产品”。

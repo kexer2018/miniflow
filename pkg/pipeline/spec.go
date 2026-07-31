@@ -8,13 +8,13 @@ import "fmt"
 // PipelineSpec 是从 JSON 文件反序列化的流水线定义。
 // 这是 miniflow CLI 主要的输入格式。
 type PipelineSpec struct {
-	Version   string              `json:"version"`             // Schema 版本，当前 "1.0"
-	Name      string              `json:"name"`                // 流水线名称
-	Workspace string              `json:"workspace,omitempty"` // 共享工作空间路径（容器内视角）
-	Source    *SourceSpec         `json:"source,omitempty"`    // 源码来源配置（引擎自动 checkout）
-	Env       map[string]string   `json:"env,omitempty"`       // 流水线级环境变量
-	EnvFile   string              `json:"env_file,omitempty"`  // .env 文件路径（miniflow 容器内路径）
-	Steps     []StepSpec          `json:"steps"`               // 步骤列表（串行执行）
+	Version   string            `json:"version"`             // Schema 版本，当前 "1.0"
+	Name      string            `json:"name"`                // 流水线名称
+	Workspace string            `json:"workspace,omitempty"` // 共享工作空间路径（容器内视角）
+	Source    *SourceSpec       `json:"source,omitempty"`    // 源码来源配置（引擎自动 checkout）
+	Env       map[string]string `json:"env,omitempty"`       // 流水线级环境变量
+	EnvFile   string            `json:"env_file,omitempty"`  // .env 文件路径（miniflow 容器内路径）
+	Steps     []StepSpec        `json:"steps"`               // 步骤列表（串行执行）
 }
 
 // SourceSpec 声明源码来源（引擎自动 checkout）。
@@ -29,16 +29,18 @@ type SourceSpec struct {
 
 // StepSpec 定义流水线中的一个步骤。
 type StepSpec struct {
-	Name       string   `json:"name"`                 // 步骤唯一名称
-	Image      string   `json:"image"`                // 容器镜像（如 "golang:1.22"）
-	Commands   []string `json:"commands"`             // 按顺序执行的命令
-	DependsOn  []string `json:"depends_on,omitempty"` // 依赖的步骤名称列表
-	Cache      *Cache   `json:"cache,omitempty"`      // 缓存挂载策略
-	Env        []string `json:"env,omitempty"`        // 环境变量（K=V 格式）
-	Secrets    []string `json:"secrets,omitempty"`    // 引用的密钥名称列表
-	Timeout    int      `json:"timeout,omitempty"`    // 步骤超时时间（秒），0 表示不限制
-	Entrypoint []string `json:"entrypoint,omitempty"` // 覆盖容器 entrypoint
-	SSHAgent   bool     `json:"ssh_agent,omitempty"`  // 映射宿主 ~/.ssh 到容器
+	Name       string         `json:"name"`                 // 步骤唯一名称
+	Type       string         `json:"type,omitempty"`       // Step 类型（如 "script.run"），为空时使用旧 commands 格式
+	Image      string         `json:"image"`                // 容器镜像（如 "golang:1.22"）
+	Commands   []string       `json:"commands"`             // 按顺序执行的命令
+	With       map[string]any `json:"with,omitempty"`       // typed step 的类型专属参数
+	DependsOn  []string       `json:"depends_on,omitempty"` // 依赖的步骤名称列表
+	Cache      *Cache         `json:"cache,omitempty"`      // 缓存挂载策略
+	Env        []string       `json:"env,omitempty"`        // 环境变量（K=V 格式）
+	Secrets    []string       `json:"secrets,omitempty"`    // 引用的密钥名称列表
+	Timeout    int            `json:"timeout,omitempty"`    // 步骤超时时间（秒），0 表示不限制
+	Entrypoint []string       `json:"entrypoint,omitempty"` // 覆盖容器 entrypoint
+	SSHAgent   bool           `json:"ssh_agent,omitempty"`  // 映射宿主 ~/.ssh 到容器
 }
 
 // Cache 定义缓存挂载策略。
@@ -62,11 +64,23 @@ func (s *PipelineSpec) Validate() error {
 		if step.Name == "" {
 			return ErrStepNameEmpty(i)
 		}
-		if step.Image == "" {
-			return ErrStepImageEmpty(step.Name)
-		}
-		if len(step.Commands) == 0 {
-			return ErrStepNoCommands(step.Name)
+		switch step.Type {
+		case "":
+			if step.Image == "" {
+				return ErrStepImageEmpty(step.Name)
+			}
+			if len(step.Commands) == 0 {
+				return ErrStepNoCommands(step.Name)
+			}
+		case "script.run":
+			if step.Image == "" {
+				return ErrStepImageEmpty(step.Name)
+			}
+			if script, ok := step.With["script"].(string); !ok || script == "" {
+				return ErrStepMissingWithField(step.Name, "script")
+			}
+		default:
+			return ErrUnsupportedStepType(step.Name, step.Type)
 		}
 	}
 

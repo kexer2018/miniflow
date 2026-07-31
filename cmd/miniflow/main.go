@@ -19,13 +19,14 @@ import (
 
 	"github.com/kexer2018/miniflow/internal/config"
 	"github.com/kexer2018/miniflow/internal/container"
-	"github.com/kexer2018/miniflow/internal/secret"
-	"github.com/kexer2018/miniflow/internal/source"
 	"github.com/kexer2018/miniflow/internal/db"
 	"github.com/kexer2018/miniflow/internal/fixer"
 	"github.com/kexer2018/miniflow/internal/llm"
 	internalLog "github.com/kexer2018/miniflow/internal/log"
 	internalpipeline "github.com/kexer2018/miniflow/internal/pipeline"
+	"github.com/kexer2018/miniflow/internal/secret"
+	"github.com/kexer2018/miniflow/internal/source"
+	"github.com/kexer2018/miniflow/internal/stepregistry"
 	pipelinespec "github.com/kexer2018/miniflow/pkg/pipeline"
 )
 
@@ -238,7 +239,7 @@ func newVersionCmd() *cobra.Command {
 // ─── 验证命令 ─────────────────────────────────────────────
 
 func newValidateCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "validate -f <file.json>",
 		Short: "Validate a pipeline JSON file",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -251,6 +252,8 @@ func newValidateCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVarP(&jsonInput, "file", "f", "", "pipeline JSON file (required)")
+	return cmd
 }
 
 // ─── 诊断命令 ─────────────────────────────────────────────
@@ -513,22 +516,19 @@ func buildSteps(spec *pipelinespec.PipelineSpec, credStore *secret.CredentialSto
 			}
 		}
 
-		steps[i] = internalpipeline.Step{
-			Name:       s.Name,
-			Image:      s.Image,
-			Commands:   s.Commands,
-			DependsOn:  s.DependsOn,
-			Env:        env,
-			Entrypoint: s.Entrypoint,
-			Timeout:    time.Duration(s.Timeout) * time.Second,
-			SSHAgent:   s.SSHAgent,
+		step, err := stepregistry.Compile(s)
+		if err != nil {
+			slog.Warn("failed to compile step", "step", s.Name, "error", err)
 		}
+		step.Env = env
+		step.Timeout = time.Duration(s.Timeout) * time.Second
 		if s.Cache != nil {
-			steps[i].Cache = &internalpipeline.Cache{
+			step.Cache = &internalpipeline.Cache{
 				Path: s.Cache.Path,
 				Key:  s.Cache.Key,
 			}
 		}
+		steps[i] = step
 	}
 	return steps
 }

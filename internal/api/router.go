@@ -20,6 +20,10 @@ func NewRouter(handler *Handler) *Router {
 	// ─── 健康检查 ──────────────────────────────────
 	r.mux.HandleFunc("GET /healthz", handler.HealthCheck)
 
+	// ─── Step 类型发现 / 校验 ───────────────────────
+	r.mux.HandleFunc("GET /api/v1/step-types", handler.ListStepTypes)
+	r.mux.HandleFunc("POST /api/v1/pipelines/validate", handler.ValidatePipeline)
+
 	// ─── 流水线执行 ────────────────────────────────
 	r.mux.HandleFunc("POST /api/v1/pipelines", handler.RunPipeline)
 	r.mux.HandleFunc("GET /api/v1/pipelines/{id}", handler.GetPipelineResult)

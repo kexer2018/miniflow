@@ -22,6 +22,14 @@ func ErrStepNoCommands(name string) error {
 	return fmt.Errorf("step %q has no commands", name)
 }
 
+func ErrUnsupportedStepType(name, typ string) error {
+	return fmt.Errorf("step %q has unsupported type %q", name, typ)
+}
+
+func ErrStepMissingWithField(name, field string) error {
+	return fmt.Errorf("step %q requires with.%s", name, field)
+}
+
 var (
 	ErrSourceNoRepo       = fmt.Errorf("source.repository is required when source is specified")
 	ErrCredFileNotFound   = fmt.Errorf("credentials file not found")

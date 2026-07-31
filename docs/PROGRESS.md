@@ -1,458 +1,196 @@
-# miniflow — Progress & Roadmap
+# miniflow 项目进度与产品化状态
 
-<!-- Auto-update: each significant change should update this file -->
-
-> **Phase**: 1 (MVP — Serial CI/CD Execution Engine)
-> **Version**: 0.1.0-alpha
-> **Go**: 1.23+ (CGO-free)
-> **Tests**: ~121 test functions across all packages | **All passing** ✅
+> 日期: 2026-07-31
+> 当前阶段: 执行内核已具备，产品化设计启动
+> Go 版本: 以 `go.mod` 为准，当前为 Go 1.25
 
 ---
 
-## 1. Project Overview
+## 1. 项目定位
 
-miniflow is an **AI-native lightweight CI/CD execution engine** written in Go. It parses DAG pipeline definitions from JSON, schedules ephemeral Docker containers to execute steps serially, collects logs, and provides an AI-powered failure diagnosis engine with RAG-based error matching.
+miniflow 当前定位为：
 
-**Three-phase roadmap:**
+> 可视化、容器化、可扩展的流水线执行平台。
 
-| Phase | Focus | Status |
-|-------|-------|--------|
-| **1** | Serial Docker execution + CLI + diagnosis foundation | ✅ **Complete** |
-| **1B** | AI diagnosis engine refinement (RAG, LLM structured output, fix suggestions) | ✅ **Complete** |
-| **2** | Parallel execution, worker daemon, REST API, Web UI, control plane | 🚧 **In design** |
+项目不以内置业务流程为核心，而是提供通用平台原语：Step 编排、DAG 校验、Docker 容器执行、共享 workspace、缓存、产物、密钥、日志、运行历史和失败诊断。用户的业务逻辑应保留在自己的脚本、仓库和 Docker 镜像中。
 
 ---
 
-## 2. Architecture
+## 2. 当前架构状态
 
-### Two-Entry-Point Design
+### 2.1 已实现主链路
 
-```
-cmd/
-├── miniflow/          # CLI entry point (cobra) — Phase 1 complete
-└── worker/            # Worker daemon entry point — Phase 1 skeleton
-```
-
-### Package Layout
-
-```
-internal/
-├── pipeline/          # DAG model, validation (Kahn), serial executor
-├── container/         # Docker SDK wrapper, socket auto-detect, workspace mgmt
-├── log/               # Log collector, regex sanitizer (8 rules), deterministic classifier
-├── llm/               # LLM abstraction layer + OpenAI-compatible client
-├── fixer/             # AI diagnosis engine + RAG seed matching + YAML seed loader
-├── api/               # REST API skeleton (Phase 2)
-├── config/            # Config loading (JSON file, env vars, CLI flags)
-└── db/                # Store interface + SQLite implementation (pure Go)
-
-pkg/pipeline/          # Public PipelineSpec types (shared by CLI and API)
-
-seeds/                 # 6 YAML seed files (auth, image-pull, network, permission, resource, app-code)
-examples/              # Sample pipeline JSON files
+```text
+Pipeline JSON
+  → PipelineSpec Validate
+  → build internal Pipeline
+  → DAG TopologicalSort
+  → Create shared workspace
+  → optional source checkout
+  → serial Docker step execution
+  → collect logs
+  → sanitize logs
+  → optional AI/RAG diagnosis
+  → persist result to SQLite
 ```
 
-### Execution Flow (Phase 1)
+### 2.2 包状态
 
-```
-JSON → PipelineSpec → Validate(DAG) → TopologicalSort(Kahn)
-    → CreateWorkspace → chown → [serial step loop]
-        → ensureImage → CreateContainer → Start → Wait
-        → CollectLogs → CleanupContainer
-    → Sanitize(optional) → Classify(optional)
-    → Diagnose(optional, AI) → Persist(SQLite)
-```
-
----
-
-## 3. Module-by-Module Status
-
-### ✅ `pkg/pipeline/` — Public Spec Types
-
-**Files**: `spec.go`, `errors.go`
-
-- `PipelineSpec` with `Validate()` — step name, image, commands, DAG
-- Sentine errors (`ErrEmptyName`, `ErrNoSteps`, etc.)
-
-**Status**: Stable. Minimal API surface, no changes expected.
+| 包/入口 | 状态 | 说明 |
+|---------|------|------|
+| `cmd/miniflow` | 可用 | CLI 主入口，支持 run、version、diagnose；validate flag 绑定需修复 |
+| `cmd/worker` | 骨架 | 可启动 daemon，但尚未承接远程任务 |
+| `pkg/pipeline` | 可用 | 外部 PipelineSpec 类型，当前以 `image + commands` 为主 |
+| `internal/pipeline` | 可用 | DAG 校验、拓扑排序、串行执行、step timeout 基础 |
+| `internal/container` | 可用 | Docker SDK 封装、workspace、cache path、socket 探测 |
+| `internal/source` | 可用 | go-git checkout、凭据匹配、浅克隆基础 |
+| `internal/secret` | 可用 | 本地 credentials store 和 secret env 解析 |
+| `internal/log` | 可用 | 日志收集、脱敏、分类 |
+| `internal/fixer` | 可用 | RAG seed、LLM 诊断、降级模式 |
+| `internal/llm` | 可用 | OpenAI-compatible client |
+| `internal/db` | 可用 | SQLite 存储 pipeline result、exec context、diagnosis history |
+| `internal/api` | 骨架 | health/history/diagnose 基础，run pipeline 仍未真正执行 |
 
 ---
 
-### ✅ `internal/pipeline/` — DAG Core & Execution
+## 3. 已完成能力
 
-**Files**: `types.go`, `validate.go`, `execute.go`
+### 3.1 执行内核
 
-Core types:
-- `Pipeline`, `Step`, `Cache`, `Status` (6 states)
-- `PipelineResult`, `StepResult`, `Classification`, `FixSuggestion`
-- `ExecContext`
+- JSON pipeline spec 解析。
+- Step 基础字段校验。
+- DAG 依赖验证和循环检测。
+- 串行执行。
+- 每个 Step 使用独立临时容器。
+- 所有 Step 挂载同一 workspace。
+- 失败后后续 Step 标记 skipped。
+- Ctrl+C/SIGTERM 取消。
+- Step timeout 字段和执行上下文基础。
 
-Validation:
-- `ValidateDAG()` — unique names, valid `depends_on` references, **Kahn cycle detection**, entry node check
-- `TopologicalSort()` — produces linear execution order
+### 3.2 Docker 与 workspace
 
-Executor:
-- `Executor.ExecutePipeline()` — serial step execution with cancellation
-- `executeStep()` — wraps Docker container config and dispatches to container manager
+- Docker socket 自动探测。
+- 镜像存在性检查。
+- 自动拉取缺失镜像。
+- 容器创建、启动、等待、日志收集、清理。
+- workspace 创建。
+- UID/GID 统一策略基础。
+- cache path 挂载基础。
 
-**Status**: Stable. Phase 2 will add parallel step groups.
+### 3.3 源码与凭据
 
-**Known gaps**:
-- `executeStep` has unused parameter `_ string` (pipelineID, kept for Phase 2 parallel groups)
-- No timeout per step (only context cancellation)
+- Pipeline-level source checkout。
+- 支持 repository/ref/shallow/depth 基础配置。
+- 支持 token、username/password、SSH key 凭据类型。
+- Step secret 引用可注入环境变量。
 
----
+### 3.4 日志与诊断
 
-### ✅ `internal/container/` — Docker Lifecycle
+- 日志采集。
+- 敏感信息脱敏。
+- 确定性错误分类。
+- YAML seed 加载。
+- RAG 匹配。
+- LLM 结构化诊断。
+- 无 LLM/API 网络时降级为 RAG-only。
 
-**Files**: `manager.go`, `docker.go`, `workspace.go`
+### 3.5 持久化
 
-Manager interface + DockerManager:
-- Socket auto-detection: DOCKER_HOST → /var/run/docker.sock → OrbStack → Docker Desktop (rootless) → rootless Docker
-- `RunContainer()` — ensure image → create → start → wait → collect logs → cleanup
-- `PullImage()`, `ImageExists()`, `Close()`
-
-WorkspaceManager:
-- `CreateWorkspace()`, `RemoveWorkspace()`, `WorkspacePath()`
-- `EnsureWorkspacePermissions()` — chown via ephemeral Alpine container (root)
-- `EnsureCacheDir()`, `CachePath()`
-
-**Key design decisions**:
-- `AutoRemove: false` — manual cleanup after log collection ensures log readability
-- All containers run as `--user 1000:1000` — UID unification
-- Commands wrapped in `/bin/sh -c` for multi-line shell support
-
-**Status**: Stable. Integration tests need Docker runtime.
-
----
-
-### ✅ `internal/log/` — Log Sanitizer & Classifier
-
-**Files**: `sanitizer.go`, `classifier.go`, `collector.go`
-
-Sanitizer (8 rules, two modes):
-| Pattern | Standard | Semantic |
-|---------|----------|----------|
-| JWT Bearer token | `***JWT***` | `***JWT_TOKEN_REDACTED***` |
-| AWS Access Key | `***AWS_KEY***` | `***AWS_ACCESS_KEY_REDACTED***` |
-| URL credentials | `***CREDENTIALS@` | `***CREDENTIALS_REDACTED@` |
-| Private key header | `***PRIVATE_KEY***` | `***PRIVATE_KEY_REDACTED***` |
-| GitHub token | `***GH_TOKEN***` | `***GITHUB_TOKEN_REDACTED***` |
-| Docker auth JSON | `***DOCKER_AUTH***` | `***DOCKER_AUTH_REDACTED***` |
-| NPM auth token | `***NPM_TOKEN***` | `***NPM_TOKEN_REDACTED***` |
-| High-entropy (40+ chars) | `***HIGH_ENTROPY***` | `***HIGH_ENTROPY_STRING_REDACTED***` |
-
-Classifier (deterministic):
-- **app_error**: panic, JS/TS errors, Python traceback, NullPointer, Go fatal/panic
-- **infra_error**: auth, image pull, network, permission, disk, cert, config not found
-- **unknown**: fallback if exit code 1 with no signal match
-
-Collector:
-- Concurrent-safe log line buffer with streaming callback support
-- `MultiReader` for merging multiple log streams
-
-**Status**: Stable. Additional rules welcome (database connection strings, etc.)
+- SQLite 自动迁移。
+- 保存 pipeline result。
+- 保存 exec context。
+- 保存 diagnosis history。
+- 查询历史结果和诊断记录基础。
 
 ---
 
-### ✅ `internal/llm/` — LLM Abstraction Layer
+## 4. 已知问题
 
-**Files**: `client.go`, `openai.go`, `prompt.go`, `prompt_test.go`, `openai_test.go`
-
-- `LLMClient` interface: Chat (sync) + ChatStream (SSE)
-- `OpenAIClient` — supports OpenAI + compatible APIs (DeepSeek, Qwen, etc.)
-  - JSON Schema for structured output (`response_format: json_schema`)
-  - Streaming (SSE with `[DONE]` termination)
-  - Configurable model, base URL, API key
-- Diagnosis prompt: system prompt + user prompt builder + JSON Schema
-  - System: CI/CD failure diagnosis expert role, classification context, rules
-  - Schema: `root_cause`, `fix_plan`, `confidence`, `category`, `suggested_fix`
-
-**Status**: Stable. Good abstraction for multi-provider support.
+| 问题 | 影响 | 建议 |
+|------|------|------|
+| `miniflow validate -f` 当前不可用 | README/CLI 用法不一致 | 将 `--file` 改为 persistent flag，或为 validate 单独注册 |
+| API run pipeline 未实现 | 前端无法真正触发执行 | 增加 run service 和异步状态 |
+| 仍以 `image + commands` 为核心 spec | 前端表单难以产品化 | 引入 typed step 的 `type + with` |
+| 无 Step Type Registry | 前后端无法共享 Step schema | 新增 registry 包和 API |
+| 无 artifact store | 产物只能留在 workspace | 增加 artifact 元数据和本地存储 |
+| cache 只有挂载语义 | 缺 restore/save、hit/miss | 增加 cache key 解析和状态记录 |
+| 无日志流 API | 图形化运行体验不足 | 基于 collector 增加 SSE/WebSocket |
+| Secret 管理仍偏本地文件 | 产品化 UI 不够 | 增加 Secret/Credential CRUD API |
+| worker 只是 skeleton | 不能分布式执行 | Phase 后置 |
 
 ---
 
-### ✅ `internal/fixer/` — AI Diagnosis Engine
+## 5. 测试状态
 
-**Files**: `diagnose.go`, `rag.go`, `seeds.go`, `seeds_yaml.go`, `rag_test.go`, `seeds_yaml_test.go`
+最近一次验证：
 
-Diagnosis pipeline:
-```
-Sanitize → Classify → RAG Match → [AppError: skip LLM] → LLM Call → Parse JSON → Result
+```bash
+go test ./... -count=1
+go build -o /tmp/miniflow-check ./cmd/miniflow
+go build -o /tmp/miniflow-worker-check ./cmd/worker
 ```
 
-Key behaviors:
-- **AppError fast-path**: skips LLM, returns RAG-matched or fallback message
-- **Degradation**: LLM unavailable → RAG-only fallback (graceful)
-- **LLM parse fallback**: JSON parse failure → raw text used as root cause
-- Token usage tracking
+结果：单元测试通过，两个入口可构建。
 
-Seed engine:
-- **17 built-in seed cases** across 7 categories (auth, image_pull, network, permission, resource, app_code, configuration)
-- **YAML seed loading** at runtime via `LoadFromYAML()` / `LoadFromDir()` — same-ID override of built-ins
-- **`NewSeedEngineWithSeedsDir()`** — CLI integration with configurable seeds directory
-- **6 YAML seed files** in `seeds/` (auth, image-pull, network, permission, resource, app-code)
-- Simple keyword matching with scoring (`matched/total` ratio)
-- `BuildContext()` for few-shot prompt context
-- **16 test functions** covering YAML loading, override, partial failure, directory loading
-
-**Status**: Complete. Seeds are now fully customizable without recompilation.
+注意：完整执行示例 pipeline 依赖本机 Docker daemon。当前环境如果 Docker/OrbStack 未运行，流水线会进入执行路径，但在镜像检查或容器创建阶段失败。
 
 ---
 
-### ✅ `internal/config/` — Configuration Loading
+## 6. 产品化下一阶段
 
-**Files**: `config.go` (with tests)
+### 6.1 P0: 修正执行器可用性
 
-Priority: CLI flags > Env vars > Config file > Code defaults
+- 修复 `validate -f`。
+- 同步 README 和 docs 中的 Go 版本。
+- 增加一条不依赖外部网络的本地 Docker 示例。
+- 为 source checkout、timeout、secret 注入补充端到端测试。
 
-Config search paths:
-1. `--config <path>` (explicit flag)
-2. `./.miniflow.json` (project root)
-3. `~/.miniflow.json` (user home)
+### 6.2 P1: Step 类型系统
 
-LLM config resolution:
-- `LLM_API_KEY` → fallback `OPENAI_API_KEY`
-- `LLM_BASE_URL` → default `https://api.openai.com/v1`
-- `LLM_MODEL` → default `gpt-4o-mini`
+- 扩展 `PipelineSpec`，兼容 typed step。
+- 新增 Step Type Registry。
+- 首批支持 `script.run` 和 `git.checkout`。
+- 暴露 Step 类型列表和表单 schema API。
 
-**Status**: Stable. Good test coverage (8 tests).
+### 6.3 P2: 产品化运行 API
 
----
+- 创建 run。
+- 查询 run。
+- 查询 step 状态。
+- 取消 run。
+- 实时日志流。
+- validation API。
 
-### ✅ `internal/db/` — Persistence Layer
+### 6.4 P3: 缓存、产物、密钥
 
-**Files**: `store.go`, `sqlite.go`
+- Artifact save/restore。
+- Artifact metadata + local store。
+- Cache restore/save。
+- Cache hit/miss 记录。
+- Secret/Credential API。
 
-`Store` interface with SQLite implementation:
-- `SavePipelineResult` / `GetPipelineResult` / `ListPipelineResults`
-- `SaveExecContext` / `GetExecContext`
-- `SaveDiagnosis` / `ListDiagnoses`
-- `Ping` / `Close`
+### 6.5 P4: 可视化编辑器
 
-Tables:
-- `pipeline_results` — execution history
-- `exec_contexts` — interrupt recovery (keyed by pipeline_id)
-- `diagnosis_history` — AI diagnosis records (with indices)
-
-**Status**: Stable. No migrations needed for Phase 1.
-
----
-
-### 🚧 `internal/api/` — REST API Skeleton
-
-**Files**: `handler.go`, `router.go`
-
-Routes:
-| Method | Path | Handler |
-|--------|------|---------|
-| GET | `/healthz` | Health check |
-| POST | `/api/v1/pipelines` | Accept pipeline for execution (stub) |
-| GET | `/api/v1/pipelines/{id}` | Get pipeline result |
-| GET | `/api/v1/pipelines` | List recent results |
-| POST | `/api/v1/fix/suggest` | Log sanitize + classify |
-| POST | `/api/v1/diagnose` | Full AI diagnosis |
-
-**Status**: Skeleton. Phase 2 will add CORS, auth, async execution, middleware.
+- Step Palette。
+- DAG Canvas。
+- Step Inspector。
+- Bottom Run/Log Panel。
+- Raw Spec Preview。
 
 ---
 
-### ✅ `cmd/miniflow/` — CLI
+## 7. 文档索引
 
-**Files**: `main.go`
-
-Commands:
-| Command | Description | Flags |
-|---------|-------------|-------|
-| `miniflow` (default) | Execute a pipeline | `-f`, `-v`, `-d`, `-c` |
-| `miniflow validate` | Validate pipeline JSON | `-f` |
-| `miniflow diagnose` | AI diagnose a log | `--step`, `--log`, `--log-file` |
-| `miniflow version` | Print version | — |
-
-Auto-diagnose (`-d` flag): on pipeline failure, runs `fixer.Diagnose()` on each failed step.
-
-**Status**: Stable. Good UX with ANSI symbols and structured output.
-
-### 🚧 `cmd/worker/` — Worker Daemon
-
-**Files**: `main.go`
-
-- Skeleton: initializes Docker + workspace managers, waits for signal
-- TODO Phase 2: gRPC/REST listener, image warm-up queue, task concurrency
-
-**Status**: Skeleton only.
+| 文档 | 用途 |
+|------|------|
+| `docs/basic-steps-and-visual-pipeline-design.md` | 基础 Step 与前端交互设计 |
+| `docs/CI-CD-FUNCTIONAL-ANALYSIS.md` | 产品化功能分析与路线 |
+| `docs/roadmap.md` | 优先级路线图 |
+| `docs/方案设计_实施计划.md` | 分阶段实施方案 |
+| `docs/miniflow AI原生轻量级CICD执行引擎架构与技术白皮书.md` | 架构白皮书 |
 
 ---
 
-### ✅ Docker & Deployment
+## 8. 当前结论
 
-**Dockerfile**: Multi-stage build (golang:1.23-alpine → alpine:3.20), 2 binaries.
-
-**docker-compose.yaml**: Single service (`miniflow-worker`), persistent volumes (workspaces, data), health check, environment variable configuration.
-
-**Status**: Deployable as worker container. CLI mode available via `docker compose exec`.
-
----
-
-## 4. Test Coverage
-
-### Unit Tests — All Passing ✅
-
-| Package | Files | Tests | Status |
-|---------|-------|-------|--------|
-| `internal/pipeline` | `validate_test.go`, `execute_test.go` | 26 tests | ✅ DAG validation + execution |
-| `internal/config` | `config_test.go` | 9 tests | ✅ Strong |
-| `internal/log` | `sanitizer_test.go`, `classifier_test.go`, `collector_test.go` | 35 tests | ✅ Full coverage |
-| `internal/llm` | `openai_test.go`, `prompt_test.go` | 14 tests | ✅ Client + prompts |
-| `internal/fixer` | `rag_test.go`, `seeds_yaml_test.go` | 21 tests | ✅ Seed engine + YAML loading |
-| `internal/db` | `sqlite_test.go` | 16 tests | ✅ CRUD + migration |
-
-**Total: ~121 test functions across 12 test files**
-
-**Previously untested packages now covered**:
-- `internal/log/classifier.go` — 10 tests (signal rules, edge cases)
-- `internal/log/collector.go` — 16 tests (line collection, streaming callback, concurrency)
-- `internal/pipeline/validate.go` — 21 tests (TopologicalSort, ValidateDAG, cycle detection)
-- `internal/pipeline/execute.go` — 5 tests (executor with mock container manager)
-- `internal/container/workspace.go` — tested via pipeline/execute_test.go integration
-- `internal/db/sqlite.go` — 16 tests (CRUD, exec context, diagnosis history, migrations)
-- `internal/llm/openai.go` — 11 tests (HTTP client, streaming, error handling, schema validation)
-- `internal/fixer/seeds_yaml.go` — 16 tests (YAML load, override, dir loading, partial failure)
-
-### Still Missing Test Coverage
-
-- `internal/container/docker.go` — integration-tagged only (requires Docker runtime)
-- `internal/container/manager.go` — no unit tests
-- `internal/fixer/diagnose.go` — requires LLM mock
-- `internal/api/handler.go` / `internal/api/router.go` — no tests
-- `internal/config/config.go` — `LoadDefault()` untested
-
-### Integration Tests
-
-- Tag-based: `go test -tags=integration ./internal/container/...`
-
----
-
-## 5. Completed Features
-
-- [x] Pipeline JSON parsing and validation
-- [x] DAG topological sort (Kahn algorithm) with cycle detection
-- [x] Serial Docker container execution with workspace bind-mounts
-- [x] UID unification (1000:1000) with automatic chown
-- [x] Docker socket auto-detection (OrbStack, Docker Desktop, rootless)
-- [x] Cache mount support
-- [x] Log sanitizer (8 regex rules, standard + semantic modes)
-- [x] Deterministic log classifier (app_error / infra_error / unknown)
-- [x] Log collector with streaming callback
-- [x] AI diagnosis engine with structured output (JSON Schema)
-- [x] RAG seed matching engine (17 built-in cases)
-- [x] Graceful degradation: LLM unavailable → RAG-only fallback
-- [x] AppError fast-path: skip LLM for application code errors
-- [x] SQLite persistence (pipeline results, execution contexts, diagnosis history)
-- [x] Config loading (CLI flags → env vars → config file → defaults)
-- [x] CLI with 4 subcommands (run, validate, diagnose, version)
-- [x] CLI auto-diagnose flag (`-d`) for failed steps
-- [x] REST API skeleton (6 routes)
-- [x] Multi-stage Docker build
-- [x] Docker Compose deployment with persistent volumes
-- [x] Signal handling (SIGINT/SIGTERM) for graceful cancellation
-- [x] YAML seed file loading at runtime (`LoadFromYAML`/`LoadFromDir`)
-- [x] Seed override: YAML files replace built-in seeds by ID
-- [x] 6 YAML seed files shipping in `seeds/` directory
-- [x] Chinese-localized LLM diagnosis prompt
-- [x] Full test coverage for DAG validation (21 tests), execution (5 tests), log classifier (10 tests), log collector (16 tests), OpenAI client (11 tests), SQLite persistence (16 tests), YAML seed loading (16 tests)
-
----
-
-> 📘 **完整 CI/CD 功能分析见** [`docs/CI-CD-FUNCTIONAL-ANALYSIS.md`](./CI-CD-FUNCTIONAL-ANALYSIS.md)
-> — 包含功能分层架构、每层详细设计、Spec 演进路线、三阶段实施路线、完整管道示例
-
-## 6. Immediate Next Steps
-
-### 🔄 CI/CD
-
-- [ ] GitHub Actions workflow (verify no regressions)
-- [ ] Add Go lint + vet + test steps
-
-### 🔄 Remaining Test Coverage
-
-- [ ] Add mock for `llm.LLMClient` to test `fixer/diagnose.go` (requires LLM mock)
-- [ ] Add unit tests for `internal/api/handler.go` / `router.go` — HTTP handlers
-- [ ] Add unit tests for `internal/container/docker.go` — mock Docker client
-- [ ] Add unit tests for `internal/config/config.go` — `LoadDefault()`
-
-### 🔄 AI & RAG Polish
-
-- [ ] Document YAML schema for user-contributed seeds
-- [ ] Dynamic RAG: feed successful diagnoses back into seed library (via `diagnosis_history`)
-
----
-
-## 7. Phase 2 Roadmap (Design Phase)
-
-### Parallel Execution Engine
-
-- [ ] Concurrent step groups (parallel stages within topologically-sorted levels)
-- [ ] Worker pool with configurable concurrency
-- [ ] Step timeout (configurable per step)
-- [ ] Retry policies for transient failures
-
-### Worker Daemon
-
-- [ ] gRPC service for receiving tasks from control plane
-- [ ] REST API completion (CORS, auth middleware, request logging)
-- [ ] Image warm-up queue
-- [ ] Task queue with concurrent limit
-- [ ] Heartbeat / health reporting to control plane
-
-### Web UI (WebSocket-based)
-
-- [ ] Real-time pipeline execution dashboard
-- [ ] Step log streaming per-step
-- [ ] Diagnosis result visualization
-- [ ] Pipeline configuration editor (JSON)
-
-### Control Plane
-
-- [ ] Multi-worker orchestration
-- [ ] Centralized pipeline scheduling
-- [ ] Execution history dashboard
-- [ ] Credential management
-
-### AI & RAG
-
-- [ ] Dynamic RAG: feed successful diagnoses back into seed library (via `diagnosis_history`)
-- [ ] Auto-fix execution: apply `config_override` from LLM suggestions to step config
-- [ ] Multi-step diagnosis: analyze logs across multiple failed steps
-- [ ] Confidence-based escalation: low-confidence → request human review
-- [ ] Prompt caching support (system prompt reuse)
-
----
-
-## 8. Known Technical Debt
-
-| Area | Issue | Impact |
-|------|-------|--------|
-| `pipeline/execute.go:153` | Unused `_ string` parameter (pipelineID) | Minor — kept for Phase 2 parallel groups |
-| `internal/llm/openai.go` | No HTTP client timeout configured | Potential resource leak on hung connections |
-| `internal/api/router.go` | Uses `http.ServeMux` (Go 1.22+) | Adequate for now, chi/gin planned for Phase 2 |
-| `internal/container/docker.go` | `AutoRemove: false` with manual cleanup | Works but creates container lifecycle states |
-| `internal/fixer/diagnose.go` | No unit tests (requires LLM mock) | Low confidence in diagnosis orchestration logic |
-| `internal/container` | No mock-based unit tests | Docker-dependent tests skipped in CI without Docker |
-| Tests | ~121 tests, but container + API packages still uncovered | Gaps in Docker and HTTP handler coverage |
-| Documentation | No `example_test.go` files | Harder for new contributors to onboard |
-
----
-
-## 9. Integration Points
-
-| System | Method | Status |
-|--------|--------|--------|
-| Docker Engine | UNIX socket auto-detection | ✅ |
-| OpenAI API | HTTP REST (chat/completions) | ✅ |
-| OpenAI-compatible APIs | Configurable base URL | ✅ |
-| SQLite | Pure Go via `modernc.org/sqlite` | ✅ |
-
----
-
-*Last updated: 2026-06-19*
+miniflow 已经不是纯设计草案。CLI、DAG、Docker 执行、workspace、source checkout、日志、诊断和 SQLite 都有可运行基础。下一步不应继续横向扩展 AI 能力，而应把执行内核产品化：Step 类型系统、运行 API、实时日志、artifact/cache/secret 管理和图形化编辑器。

@@ -78,3 +78,43 @@ func TestPipelineSpecValidateBackwardCompat(t *testing.T) {
 		t.Fatalf("expected no error for backward compat, got: %v", err)
 	}
 }
+
+func TestPipelineSpecValidateTypedScriptRun(t *testing.T) {
+	spec := &PipelineSpec{
+		Version: "1.1",
+		Name:    "typed-pipeline",
+		Steps: []StepSpec{
+			{
+				Name:  "test",
+				Type:  "script.run",
+				Image: "golang:1.25",
+				With: map[string]any{
+					"script": "go test ./...",
+				},
+			},
+		},
+	}
+
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("expected typed script.run step to validate, got: %v", err)
+	}
+}
+
+func TestPipelineSpecValidateTypedScriptRunRequiresScript(t *testing.T) {
+	spec := &PipelineSpec{
+		Version: "1.1",
+		Name:    "typed-pipeline",
+		Steps: []StepSpec{
+			{
+				Name:  "test",
+				Type:  "script.run",
+				Image: "golang:1.25",
+				With:  map[string]any{},
+			},
+		},
+	}
+
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected script.run without with.script to fail validation")
+	}
+}

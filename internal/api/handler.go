@@ -8,6 +8,7 @@ import (
 	"github.com/kexer2018/miniflow/internal/db"
 	"github.com/kexer2018/miniflow/internal/fixer"
 	"github.com/kexer2018/miniflow/internal/log"
+	"github.com/kexer2018/miniflow/internal/stepregistry"
 	pipelinespec "github.com/kexer2018/miniflow/pkg/pipeline"
 )
 
@@ -44,11 +45,40 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ─── Step Type API ────────────────────────────────────────
+
+func (h *Handler) ListStepTypes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, stepregistry.Builtins())
+}
+
 // ─── 流水线 API ───────────────────────────────────────────
 
 // RunPipelineRequest 是运行流水线的请求体。
 type RunPipelineRequest struct {
 	Spec pipelinespec.PipelineSpec `json:"spec"`
+}
+
+func (h *Handler) ValidatePipeline(w http.ResponseWriter, r *http.Request) {
+	var req RunPipelineRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	if err := req.Spec.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"valid": false,
+			"error": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"valid":   true,
+		"name":    req.Spec.Name,
+		"version": req.Spec.Version,
+		"steps":   len(req.Spec.Steps),
+	})
 }
 
 func (h *Handler) RunPipeline(w http.ResponseWriter, r *http.Request) {
