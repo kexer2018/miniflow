@@ -3,11 +3,14 @@ package run
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/kexer2018/miniflow/internal/artifact"
 	"github.com/kexer2018/miniflow/internal/container"
 	"github.com/kexer2018/miniflow/internal/db"
 	logutil "github.com/kexer2018/miniflow/internal/log"
@@ -15,6 +18,7 @@ import (
 	"github.com/kexer2018/miniflow/internal/secret"
 	"github.com/kexer2018/miniflow/internal/source"
 	"github.com/kexer2018/miniflow/internal/speccompiler"
+	"github.com/kexer2018/miniflow/internal/stepops"
 	pipelinespec "github.com/kexer2018/miniflow/pkg/pipeline"
 )
 
@@ -23,6 +27,7 @@ type Service struct {
 	mgr       container.Manager
 	wsManager *container.WorkspaceManager
 	credStore *secret.CredentialStore
+	artifacts *artifact.Manager
 
 	mu          sync.RWMutex
 	runs        map[string]*Run
@@ -36,11 +41,16 @@ func NewService(store db.Store, mgr container.Manager, ws *container.WorkspaceMa
 	if ws == nil {
 		ws = container.NewWorkspaceManager("")
 	}
+	var artifactStore db.ArtifactStore
+	if indexedStore, ok := store.(db.ArtifactStore); ok {
+		artifactStore = indexedStore
+	}
 	return &Service{
 		store:       store,
 		mgr:         mgr,
 		wsManager:   ws,
 		credStore:   secret.NewCredentialStore(),
+		artifacts:   artifact.NewManager(filepath.Join(filepath.Dir(ws.BaseDir), "artifacts"), artifactStore),
 		runs:        make(map[string]*Run),
 		steps:       make(map[string][]StepRun),
 		history:     make(map[string][]Event),
@@ -48,6 +58,9 @@ func NewService(store db.Store, mgr container.Manager, ws *container.WorkspaceMa
 		cancels:     make(map[string]context.CancelFunc),
 	}
 }
+
+// ArtifactManager exposes the local artifact reader used by the API layer.
+func (s *Service) ArtifactManager() *artifact.Manager { return s.artifacts }
 
 // SetCredentialStore sets the secret/source credential resolver used by API runs.
 func (s *Service) SetCredentialStore(store *secret.CredentialStore) {
@@ -202,6 +215,7 @@ func (s *Service) execute(ctx context.Context, runID string, spec pipelinespec.P
 	}
 
 	executor := internalpipeline.NewExecutor(s.mgr, s.wsManager)
+	executor.SetOperationHandler(stepops.NewManager(s.wsManager, source.NewManager(s.credStore), s.artifacts))
 	result := executor.ExecutePipelineWithObserver(ctx, p, &observer{service: s, runID: runID})
 	sanitizePipelineResult(result)
 
@@ -228,6 +242,25 @@ func (o *observer) StepStarted(step internalpipeline.Step) {
 	})
 }
 
+func (o *observer) StepLog(step internalpipeline.Step, line string) {
+	if line == "" {
+		return
+	}
+	message := logutil.SanitizeString(line)
+	slog.Info("step log",
+		"run_id", o.runID,
+		"step", step.Name,
+		"message", message,
+	)
+	o.service.publish(Event{
+		Type:    EventLog,
+		RunID:   o.runID,
+		Step:    step.Name,
+		Message: message,
+		Time:    time.Now(),
+	})
+}
+
 func (o *observer) StepFinished(result internalpipeline.StepResult) {
 	status := convertStatus(result.Status)
 	o.service.updateStep(o.runID, result.Name, status, result.ExitCode, result.DurationMs, result.Error)
@@ -241,19 +274,6 @@ func (o *observer) StepFinished(result internalpipeline.StepResult) {
 		Message:    result.Error,
 		Time:       time.Now(),
 	})
-	if result.RawLog != "" {
-		message := result.Sanitized
-		if message == "" {
-			message = logutil.SanitizeString(result.RawLog)
-		}
-		o.service.publish(Event{
-			Type:    EventLog,
-			RunID:   o.runID,
-			Step:    result.Name,
-			Message: message,
-			Time:    time.Now(),
-		})
-	}
 }
 
 func sanitizePipelineResult(result *internalpipeline.PipelineResult) {

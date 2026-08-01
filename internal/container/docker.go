@@ -144,6 +144,10 @@ func (m *DockerManager) RunContainer(ctx context.Context, cfg Config) (Result, e
 
 	slog.Debug("container started", "id", shortID(cont.ID))
 
+	outputCh := make(chan string, 1)
+	logErrCh := make(chan error, 1)
+	go m.collectContainerLogs(ctx, cont.ID, cfg.LogCallback, outputCh, logErrCh)
+
 	// 5. 等待容器退出
 	statusCh, errCh := m.cli.ContainerWait(ctx, cont.ID, container.WaitConditionNotRunning)
 	var exitCode int
@@ -157,34 +161,11 @@ func (m *DockerManager) RunContainer(ctx context.Context, cfg Config) (Result, e
 		exitCode = int(resp.StatusCode)
 	}
 
-	// 6. 收集日志
-	logs, err := m.cli.ContainerLogs(ctx, cont.ID, container.LogsOptions{
-		ShowStdout: true,
-		ShowStderr: true,
-		Timestamps: false,
-	})
-	if err != nil {
+	output := strings.TrimSpace(<-outputCh)
+	if logErr := <-logErrCh; logErr != nil && ctx.Err() == nil {
 		m.cleanupContainer(ctx, cont.ID)
-		return Result{ExitCode: exitCode}, fmt.Errorf("container logs: %w", err)
+		return Result{Output: output, ExitCode: exitCode}, fmt.Errorf("container logs: %w", logErr)
 	}
-	defer logs.Close()
-
-	var stdout, stderr bytes.Buffer
-	_, err = stdcopy.StdCopy(&stdout, &stderr, logs)
-	if err != nil {
-		raw, readErr := io.ReadAll(logs)
-		if readErr != nil {
-			m.cleanupContainer(ctx, cont.ID)
-			return Result{ExitCode: exitCode}, fmt.Errorf("read logs: %w", readErr)
-		}
-		m.cleanupContainer(ctx, cont.ID)
-		return Result{
-			Output:   string(raw),
-			ExitCode: exitCode,
-		}, nil
-	}
-
-	output := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
 
 	if exitCode == 0 {
 		info, err := m.cli.ContainerInspect(ctx, cont.ID)
@@ -206,6 +187,72 @@ func (m *DockerManager) RunContainer(ctx context.Context, cfg Config) (Result, e
 		Output:   output,
 		ExitCode: exitCode,
 	}, nil
+}
+
+func (m *DockerManager) collectContainerLogs(ctx context.Context, containerID string, callback LogCallback, outputCh chan<- string, errCh chan<- error) {
+	logs, err := m.cli.ContainerLogs(ctx, containerID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+		Timestamps: false,
+	})
+	if err != nil {
+		outputCh <- ""
+		errCh <- err
+		return
+	}
+	defer logs.Close()
+
+	var stdout, stderr bytes.Buffer
+	stdoutWriter := &callbackWriter{buffer: &stdout, callback: callback}
+	stderrWriter := &callbackWriter{buffer: &stderr, callback: callback}
+	if _, err := stdcopy.StdCopy(stdoutWriter, stderrWriter, logs); err != nil {
+		stdoutWriter.flush()
+		stderrWriter.flush()
+		outputCh <- strings.TrimSpace(stdout.String() + "\n" + stderr.String())
+		errCh <- err
+		return
+	}
+	stdoutWriter.flush()
+	stderrWriter.flush()
+
+	outputCh <- strings.TrimSpace(stdout.String() + "\n" + stderr.String())
+	errCh <- nil
+}
+
+type callbackWriter struct {
+	buffer   *bytes.Buffer
+	callback LogCallback
+	pending  []byte
+}
+
+func (w *callbackWriter) Write(p []byte) (int, error) {
+	if w.buffer != nil {
+		_, _ = w.buffer.Write(p)
+	}
+	if w.callback == nil {
+		return len(p), nil
+	}
+	data := append(w.pending, p...)
+	w.pending = w.pending[:0]
+	for {
+		idx := bytes.IndexByte(data, '\n')
+		if idx < 0 {
+			w.pending = append(w.pending, data...)
+			return len(p), nil
+		}
+		line := data[:idx]
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		w.callback(string(line))
+		data = data[idx+1:]
+	}
+}
+
+func (w *callbackWriter) flush() {
+	if w.callback != nil && len(w.pending) > 0 {
+		w.callback(string(w.pending))
+		w.pending = w.pending[:0]
+	}
 }
 
 // PullImage 拉取容器镜像。

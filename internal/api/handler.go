@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/kexer2018/miniflow/internal/artifact"
 	"github.com/kexer2018/miniflow/internal/db"
 	"github.com/kexer2018/miniflow/internal/fixer"
 	"github.com/kexer2018/miniflow/internal/log"
@@ -25,6 +27,7 @@ type Handler struct {
 	sanitizer   *log.Sanitizer
 	diagnoseCfg *fixer.DiagnoseConfig // 可选的诊断配置
 	docker      healthChecker
+	artifacts   *artifact.Manager
 }
 
 type healthChecker interface {
@@ -48,6 +51,9 @@ func (h *Handler) SetDiagnoseConfig(cfg *fixer.DiagnoseConfig) {
 // SetRunService 设置异步流水线执行服务。
 func (h *Handler) SetRunService(svc *runservice.Service) {
 	h.runSvc = svc
+	if svc != nil {
+		h.artifacts = svc.ArtifactManager()
+	}
 }
 
 // SetDockerHealthChecker 设置 /healthz 使用的 Docker 可达性检查器。
@@ -178,6 +184,38 @@ func (h *Handler) ListRunSteps(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, steps)
+}
+
+func (h *Handler) ListArtifacts(w http.ResponseWriter, r *http.Request) {
+	if h.artifacts == nil {
+		writeError(w, http.StatusServiceUnavailable, "artifact service not configured")
+		return
+	}
+	artifacts, err := h.artifacts.List(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, artifacts)
+}
+
+func (h *Handler) DownloadArtifact(w http.ResponseWriter, r *http.Request) {
+	if h.artifacts == nil {
+		writeError(w, http.StatusServiceUnavailable, "artifact service not configured")
+		return
+	}
+	record, err := h.artifacts.Get(r.Context(), r.PathValue("id"), r.PathValue("name"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "artifact not found")
+		return
+	}
+	if _, err := os.Stat(record.Path); err != nil {
+		writeError(w, http.StatusNotFound, "artifact archive not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", "attachment; filename="+record.Name+".tar.gz")
+	http.ServeFile(w, r, record.Path)
 }
 
 func (h *Handler) CancelRun(w http.ResponseWriter, r *http.Request) {

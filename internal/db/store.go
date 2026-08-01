@@ -3,9 +3,27 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/kexer2018/miniflow/internal/pipeline"
 )
+
+// ArtifactStore is intentionally separate from Store so existing runners can
+// execute pipelines without requiring artifact persistence.
+type ArtifactStore interface {
+	SaveArtifact(ctx context.Context, artifact ArtifactRecord) error
+	GetArtifact(ctx context.Context, runID, name string) (*ArtifactRecord, error)
+	ListArtifacts(ctx context.Context, runID string) ([]ArtifactRecord, error)
+}
+
+// ArtifactRecord indexes an archive stored on the local filesystem.
+type ArtifactRecord struct {
+	RunID     string    `json:"run_id"`
+	Name      string    `json:"name"`
+	Path      string    `json:"path"`
+	Size      int64     `json:"size"`
+	CreatedAt time.Time `json:"created_at"`
+}
 
 // ─── 存储接口 ─────────────────────────────────────────────
 
@@ -51,14 +69,14 @@ type Store interface {
 // DiagnosisRecord 保存一次 AI 诊断的历史记录。
 // 用于诊断回顾和动态 RAG 积累。
 type DiagnosisRecord struct {
-	PipelineID     string  `json:"pipeline_id"`
-	StepName       string  `json:"step_name"`
-	ClassificationType   string `json:"classification_type"`
-	ClassificationReason string `json:"classification_reason"`
-	RootCause      string  `json:"root_cause"`
-	FixPlan        string  `json:"fix_plan"`
-	Confidence     float64 `json:"confidence"`
-	Category       string  `json:"category"`
-	DiagnosisJSON  string  `json:"diagnosis_json,omitempty"` // 完整诊断结果的 JSON 快照
-	CreatedAt      int64   `json:"created_at"`
+	PipelineID           string  `json:"pipeline_id"`
+	StepName             string  `json:"step_name"`
+	ClassificationType   string  `json:"classification_type"`
+	ClassificationReason string  `json:"classification_reason"`
+	RootCause            string  `json:"root_cause"`
+	FixPlan              string  `json:"fix_plan"`
+	Confidence           float64 `json:"confidence"`
+	Category             string  `json:"category"`
+	DiagnosisJSON        string  `json:"diagnosis_json,omitempty"` // 完整诊断结果的 JSON 快照
+	CreatedAt            int64   `json:"created_at"`
 }

@@ -10,29 +10,30 @@ import (
 
 // Config 定义创建容器的参数。
 type Config struct {
-	Image      string            // 容器镜像
-	Commands   []string          // 要执行的命令
-	Entrypoint []string          // 可选 entrypoint 覆盖
-	Env        []string          // 环境变量 K=V
-	User       string            // 运行用户（默认 "1000:1000"）
-	WorkDir    string            // 容器内工作目录
-	Workspace  *WorkspaceMount   // 共享工作空间挂载
-	CacheMount []CacheMount      // 缓存卷挂载
-	NetworkEnabled bool          // 是否启用网络
+	Image          string          // 容器镜像
+	Commands       []string        // 要执行的命令
+	Entrypoint     []string        // 可选 entrypoint 覆盖
+	Env            []string        // 环境变量 K=V
+	User           string          // 运行用户（默认 "1000:1000"）
+	WorkDir        string          // 容器内工作目录
+	Workspace      *WorkspaceMount // 共享工作空间挂载
+	CacheMount     []CacheMount    // 缓存卷挂载
+	NetworkEnabled bool            // 是否启用网络
+	LogCallback    LogCallback     // 可选：实时接收 stdout/stderr 日志行
 }
 
 // WorkspaceMount 描述共享工作空间的挂载方式。
 type WorkspaceMount struct {
-	Source      string // 宿主机路径
-	Target      string // 容器内挂载点
-	SubPath     string // 可选子路径
+	Source  string // 宿主机路径
+	Target  string // 容器内挂载点
+	SubPath string // 可选子路径
 }
 
 // CacheMount 描述一个缓存卷的挂载。
 type CacheMount struct {
-	Source string // 宿主机缓存路径
-	Target string // 容器内缓存路径
-	ReadOnly bool // 是否只读
+	Source   string // 宿主机缓存路径
+	Target   string // 容器内缓存路径
+	ReadOnly bool   // 是否只读
 }
 
 // ─── 接口定义 ──────────────────────────────────────────────
@@ -55,8 +56,8 @@ type Manager interface {
 // Result 包含容器执行后的输出和状态。
 type Result struct {
 	Output   string // stdout + stderr 合并输出
-	ExitCode int   // 容器退出码
-	Error    error // 非正常退出的错误（如创建容器失败）
+	ExitCode int    // 容器退出码
+	Error    error  // 非正常退出的错误（如创建容器失败）
 }
 
 // ─── 日志收集回调 ──────────────────────────────────────────

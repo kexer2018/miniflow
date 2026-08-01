@@ -397,6 +397,25 @@ StepResult
 
 ---
 
+## 4.13 当前核心 Step 实现边界
+
+第一批核心 Step 已按单机 Docker 模型实现：
+
+- `git.checkout` 使用 runner 本机的 go-git 实现，把代码检出到共享 workspace；可通过 `credential` 引用已有凭据。
+- `script.run` 和 `file.operation` 运行在独立临时 Docker 容器中。
+- `cache.restore` 和 `cache.save` 使用 worker 本地 cache 目录；restore miss 是成功事件并会写入日志。
+- `artifact.save` 将 workspace 内的相对路径归档为本地 `tar.gz`，SQLite 只保存元数据。
+- `artifact.restore` 支持当前 run（默认）或通过 `run_id` 指定历史 run，并恢复到 workspace 内的相对目录。
+
+所有 `path`、`target_dir` 等本地文件路径都必须相对于 workspace，不能访问 runner 的任意宿主机路径。PipelineSpec 仍是文件/API 输入的唯一配置协议；SQLite 不保存或替代用户的原始流水线定义。
+
+Artifact API：
+
+- `GET /api/v1/runs/{id}/artifacts`
+- `GET /api/v1/runs/{id}/artifacts/{name}/download`
+
+`cache.restore` 的 fallback key、artifact 的保留期清理与 `latest_success` 恢复属于后续存储策略增强，不改变当前 Step 协议。
+
 ## 5. 后端产品化缺口
 
 ### 5.1 Step Type Registry

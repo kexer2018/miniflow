@@ -150,27 +150,18 @@ go build -o /tmp/miniflow-worker-check ./cmd/worker
 
 ### 6.2 P1: Step 类型系统
 
-- 扩展 `PipelineSpec`，兼容 typed step。
-- 新增 Step Type Registry。
-- 首批支持 `script.run` 和 `git.checkout`。
-- 暴露 Step 类型列表和表单 schema API。
+- 已完成 `script.run`、`git.checkout`、`file.operation`、`cache.restore`、`cache.save`、`artifact.save` 与 `artifact.restore`。
+- Step Type Registry 与 Step Types API 已暴露基础 schema。
 
 ### 6.3 P2: 产品化运行 API
 
-- 创建 run。
-- 查询 run。
-- 查询 step 状态。
-- 取消 run。
-- 实时日志流。
-- validation API。
+- 创建/查询/取消 run、查询 Step 状态、validation API 与 SSE 实时日志已完成。
+- Artifact 列表和下载 API 已完成。
 
 ### 6.4 P3: 缓存、产物、密钥
 
-- Artifact save/restore。
-- Artifact metadata + local store。
-- Cache restore/save。
-- Cache hit/miss 记录。
-- Secret/Credential API。
+- 本地 Artifact save/restore、SQLite 元数据和本地 Cache restore/save 已完成。
+- Cache fallback key、保留期清理和 Secret/Credential API 仍待实现。
 
 ### 6.5 P4: 可视化编辑器
 

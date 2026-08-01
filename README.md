@@ -313,8 +313,8 @@ OrbStack 是 macOS 上比 Docker Desktop 更轻量的替代方案，macOS 开发
 |-------|------|------|
 | 1 | DAG 解析 + 串行容器执行 + 日志管道 | ✅ 完成 |
 | 1B | 日志脱敏 + 分类 + RAG/LLM 失败诊断 | 🔧 开发中 |
-| 2 | Step Type Registry + Run API + 日志流 | 📋 规划中 |
-| 3 | Artifact/Cache/Secret 产品化 + 可视化编辑器 MVP | 📋 规划中 |
+| 2 | Step Type Registry + Run API + SSE 日志流 | 🔧 开发中 |
+| 3 | 本地 Artifact/Cache、Secret 产品化 + 可视化编辑器 MVP | 🔧 开发中 |
 | Later | Worker/分布式、插件市场、自然语言编排 | 🕒 后置 |
 
 ## 依赖

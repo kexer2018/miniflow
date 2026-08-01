@@ -1,6 +1,8 @@
 package container
 
 import (
+	"bytes"
+	"reflect"
 	"testing"
 )
 
@@ -53,5 +55,32 @@ func TestBuildMounts_Cache(t *testing.T) {
 	}
 	if !foundApt {
 		t.Error("apt cache mount not found")
+	}
+}
+
+func TestCallbackWriterEmitsCompleteLines(t *testing.T) {
+	var lines []string
+	var out bytes.Buffer
+	w := &callbackWriter{
+		buffer: &out,
+		callback: func(line string) {
+			lines = append(lines, line)
+		},
+	}
+
+	if _, err := w.Write([]byte("one\nt")); err != nil {
+		t.Fatalf("write first chunk: %v", err)
+	}
+	if _, err := w.Write([]byte("wo\r\nthree")); err != nil {
+		t.Fatalf("write second chunk: %v", err)
+	}
+	w.flush()
+
+	want := []string{"one", "two", "three"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("lines mismatch\nwant %#v\n got %#v", want, lines)
+	}
+	if out.String() != "one\ntwo\r\nthree" {
+		t.Fatalf("buffer mismatch: %q", out.String())
 	}
 }

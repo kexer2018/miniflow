@@ -124,6 +124,19 @@ func (s *CredentialStore) Match(repoURL string) *Credential {
 	return best
 }
 
+// Get returns a credential by its stable user-facing ID.
+func (s *CredentialStore) Get(id string) *Credential {
+	if s == nil || id == "" {
+		return nil
+	}
+	for _, credential := range s.creds {
+		if credential.ID == id {
+			return credential
+		}
+	}
+	return nil
+}
+
 // ResolveSecret 根据 secret ID 返回对应的值。
 // 对 type=env 返回 "KEY=VALUE" 格式字符串。
 // 对其他 type 返回 Value 字段。

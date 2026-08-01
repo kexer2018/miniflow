@@ -74,6 +74,48 @@ func (s *SQLiteStore) SavePipelineResult(ctx context.Context, result *pipeline.P
 	return nil
 }
 
+func (s *SQLiteStore) SaveArtifact(ctx context.Context, artifact ArtifactRecord) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO artifacts (run_id, name, path, size, created_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(run_id, name) DO UPDATE SET path=excluded.path, size=excluded.size, created_at=excluded.created_at`,
+		artifact.RunID, artifact.Name, artifact.Path, artifact.Size, artifact.CreatedAt.Unix())
+	if err != nil {
+		return fmt.Errorf("save artifact: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) GetArtifact(ctx context.Context, runID, name string) (*ArtifactRecord, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT run_id, name, path, size, created_at FROM artifacts WHERE run_id = ? AND name = ?`, runID, name)
+	var artifact ArtifactRecord
+	var createdAt int64
+	if err := row.Scan(&artifact.RunID, &artifact.Name, &artifact.Path, &artifact.Size, &createdAt); err != nil {
+		return nil, fmt.Errorf("get artifact: %w", err)
+	}
+	artifact.CreatedAt = time.Unix(createdAt, 0)
+	return &artifact, nil
+}
+
+func (s *SQLiteStore) ListArtifacts(ctx context.Context, runID string) ([]ArtifactRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT run_id, name, path, size, created_at FROM artifacts WHERE run_id = ? ORDER BY name`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list artifacts: %w", err)
+	}
+	defer rows.Close()
+
+	artifacts := make([]ArtifactRecord, 0)
+	for rows.Next() {
+		var artifact ArtifactRecord
+		var createdAt int64
+		if err := rows.Scan(&artifact.RunID, &artifact.Name, &artifact.Path, &artifact.Size, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan artifact: %w", err)
+		}
+		artifact.CreatedAt = time.Unix(createdAt, 0)
+		artifacts = append(artifacts, artifact)
+	}
+	return artifacts, rows.Err()
+}
+
 func (s *SQLiteStore) GetPipelineResult(ctx context.Context, id string) (*pipeline.PipelineResult, error) {
 	query := `SELECT id, name, status, total_steps, step_results_json, started_at, finished_at, duration_ms
 		FROM pipeline_results WHERE id = ?`
@@ -311,6 +353,14 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_pipeline_results_created_at
 			ON pipeline_results(created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS artifacts (
+			run_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			path TEXT NOT NULL,
+			size INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (run_id, name)
+		)`,
 		`CREATE TABLE IF NOT EXISTS exec_contexts (
 			pipeline_id TEXT PRIMARY KEY,
 			workspace_dir TEXT NOT NULL DEFAULT '',

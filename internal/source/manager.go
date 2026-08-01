@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	pipelinespec "github.com/kexer2018/miniflow/pkg/pipeline"
 	"github.com/kexer2018/miniflow/internal/secret"
+	pipelinespec "github.com/kexer2018/miniflow/pkg/pipeline"
 )
 
 // ─── Manager ──────────────────────────────────────────
@@ -38,7 +38,10 @@ func (m *Manager) PrepareWorkspace(ctx context.Context, spec *pipelinespec.Sourc
 	)
 
 	// 1. 匹配凭证
-	cred := m.credStore.Match(spec.Repository)
+	cred := m.credStore.Get(spec.Credential)
+	if cred == nil {
+		cred = m.credStore.Match(spec.Repository)
+	}
 
 	// 2. 构造 clone URL
 	cloneURL := buildCloneURL(spec.Repository, cred)
@@ -48,6 +51,7 @@ func (m *Manager) PrepareWorkspace(ctx context.Context, spec *pipelinespec.Sourc
 		Ref:        spec.Ref,
 		Depth:      spec.Depth,
 		Credential: cred,
+		Submodules: spec.Submodules,
 	}
 
 	result, err := Clone(ctx, cloneURL, dest, opts)

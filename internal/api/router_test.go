@@ -37,10 +37,18 @@ func (m *fakeRunContainerManager) RunContainer(ctx context.Context, cfg containe
 		}
 	}
 	if len(m.outputs) == 0 {
+		if cfg.LogCallback != nil {
+			cfg.LogCallback("ok")
+		}
 		return container.Result{Output: "ok", ExitCode: 0}, nil
 	}
 	result := m.outputs[0]
 	m.outputs = m.outputs[1:]
+	if cfg.LogCallback != nil && result.Output != "" {
+		for _, line := range strings.Split(result.Output, "\n") {
+			cfg.LogCallback(line)
+		}
+	}
 	return result, nil
 }
 

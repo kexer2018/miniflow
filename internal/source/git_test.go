@@ -14,6 +14,20 @@ import (
 	"github.com/kexer2018/miniflow/internal/secret"
 )
 
+func TestIsSSHRepository(t *testing.T) {
+	for _, repository := range []string{
+		"git@github.com:example/repo.git",
+		"ssh://git@github.com/example/repo.git",
+	} {
+		if !isSSHRepository(repository) {
+			t.Fatalf("expected SSH repository: %s", repository)
+		}
+	}
+	if isSSHRepository("https://github.com/example/repo.git") {
+		t.Fatal("HTTPS repository must not request SSH authentication")
+	}
+}
+
 // setupTestRepo 在临时目录创建一个 git 仓库并返回路径和 HEAD commit SHA。
 func setupTestRepo(t *testing.T, branch string) (repoPath, commitSHA string) {
 	t.Helper()

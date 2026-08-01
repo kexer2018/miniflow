@@ -23,13 +23,21 @@ const (
 
 // Executor 负责根据 DAG 定义串行执行步骤。
 type Executor struct {
-	containerMgr container.Manager
-	wsManager    *container.WorkspaceManager
+	containerMgr     container.Manager
+	wsManager        *container.WorkspaceManager
+	operationHandler OperationHandler
+}
+
+// OperationHandler performs local runner primitives that do not execute user
+// supplied business scripts.
+type OperationHandler interface {
+	ExecuteOperation(ctx context.Context, runID, workspace string, operation Operation) (string, error)
 }
 
 // Observer receives best-effort lifecycle callbacks while a pipeline runs.
 type Observer interface {
 	StepStarted(step Step)
+	StepLog(step Step, line string)
 	StepFinished(result StepResult)
 }
 
@@ -39,6 +47,10 @@ func NewExecutor(mgr container.Manager, wsm *container.WorkspaceManager) *Execut
 		containerMgr: mgr,
 		wsManager:    wsm,
 	}
+}
+
+func (e *Executor) SetOperationHandler(handler OperationHandler) {
+	e.operationHandler = handler
 }
 
 // ─── SSH 密钥注入 ─────────────────────────────────────────
@@ -218,7 +230,7 @@ func (e *Executor) ExecutePipelineWithObserver(ctx context.Context, p *Pipeline,
 		if observer != nil {
 			observer.StepStarted(step)
 		}
-		stepResult := e.executeStep(ctx, step, wsPath, workDir)
+		stepResult := e.executeStep(ctx, p.ID, step, wsPath, workDir, observer)
 		result.StepResults = append(result.StepResults, stepResult)
 		if observer != nil {
 			observer.StepFinished(stepResult)
@@ -229,6 +241,7 @@ func (e *Executor) ExecutePipelineWithObserver(ctx context.Context, p *Pipeline,
 			"status", stepResult.Status,
 			"exit_code", stepResult.ExitCode,
 			"duration_ms", stepResult.DurationMs,
+			"error", stepResult.Error,
 		)
 
 		if stepResult.Status == StatusFailed {
@@ -297,7 +310,7 @@ func hasSSHStep(steps []Step) bool {
 // ─── 单步执行 ─────────────────────────────────────────────
 
 // executeStep 执行单个 Step。
-func (e *Executor) executeStep(ctx context.Context, step Step, wsPath, workDir string) StepResult {
+func (e *Executor) executeStep(ctx context.Context, runID string, step Step, wsPath, workDir string, observer Observer) StepResult {
 	slog.Debug("executing step", "name", step.Name, "image", step.Image, "timeout", step.Timeout)
 
 	// 如果步骤配置了超时，创建带超时的 context
@@ -308,6 +321,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, wsPath, workDir s
 	}
 
 	startedAt := time.Now()
+	if step.Operation != nil {
+		return e.executeOperation(ctx, runID, step, wsPath, observer, startedAt)
+	}
 
 	// 构建命令，如果需要 SSH 则前置密钥设置步骤
 	commands := step.Commands
@@ -340,6 +356,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, wsPath, workDir s
 			Source: wsPath,
 			Target: workDir,
 		},
+	}
+	if observer != nil {
+		cfg.LogCallback = func(line string) {
+			observer.StepLog(step, line)
+		}
 	}
 
 	// 如果有缓存配置，添加缓存挂载
@@ -388,6 +409,21 @@ func (e *Executor) executeStep(ctx context.Context, step Step, wsPath, workDir s
 		DurationMs: durationMs,
 		Error:      formatStepError(result),
 	}
+}
+
+func (e *Executor) executeOperation(ctx context.Context, runID string, step Step, wsPath string, observer Observer, startedAt time.Time) StepResult {
+	durationMs := func() int64 { return time.Since(startedAt).Milliseconds() }
+	if e.operationHandler == nil {
+		return StepResult{Name: step.Name, Status: StatusFailed, ExitCode: -1, DurationMs: durationMs(), Error: "local step operation handler is not configured"}
+	}
+	message, err := e.operationHandler.ExecuteOperation(ctx, runID, wsPath, *step.Operation)
+	if err != nil {
+		return StepResult{Name: step.Name, Status: StatusFailed, ExitCode: -1, DurationMs: durationMs(), Error: err.Error()}
+	}
+	if message != "" && observer != nil {
+		observer.StepLog(step, message)
+	}
+	return StepResult{Name: step.Name, Status: StatusSuccess, ExitCode: 0, RawLog: message, DurationMs: durationMs()}
 }
 
 // formatStepError 根据容器退出码返回友好的错误描述。

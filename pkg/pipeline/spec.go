@@ -21,6 +21,7 @@ type PipelineSpec struct {
 type SourceSpec struct {
 	Repository  string   `json:"repository"`             // Git 仓库 URL（必需）
 	Ref         string   `json:"ref,omitempty"`          // 分支/tag/commit，默认 "main"
+	Credential  string   `json:"credential,omitempty"`   // 可选的凭据引用
 	Shallow     *bool    `json:"shallow,omitempty"`      // 是否浅克隆，默认 true
 	Depth       int      `json:"depth,omitempty"`        // 浅克隆深度，默认 50
 	Submodules  bool     `json:"submodules,omitempty"`   // 是否拉取子模块
@@ -78,6 +79,32 @@ func (s *PipelineSpec) Validate() error {
 			}
 			if script, ok := step.With["script"].(string); !ok || script == "" {
 				return ErrStepMissingWithField(step.Name, "script")
+			}
+		case "git.checkout":
+			if value, ok := step.With["repository"].(string); !ok || value == "" {
+				return ErrStepMissingWithField(step.Name, "repository")
+			}
+		case "file.operation":
+			if value, ok := step.With["operation"].(string); !ok || value == "" {
+				return ErrStepMissingWithField(step.Name, "operation")
+			}
+		case "cache.restore", "cache.save":
+			if value, ok := step.With["key"].(string); !ok || value == "" {
+				return ErrStepMissingWithField(step.Name, "key")
+			}
+			if value, ok := step.With["path"].(string); !ok || value == "" {
+				return ErrStepMissingWithField(step.Name, "path")
+			}
+		case "artifact.save":
+			if value, ok := step.With["name"].(string); !ok || value == "" {
+				return ErrStepMissingWithField(step.Name, "name")
+			}
+			if value, ok := step.With["path"].(string); !ok || value == "" {
+				return ErrStepMissingWithField(step.Name, "path")
+			}
+		case "artifact.restore":
+			if value, ok := step.With["name"].(string); !ok || value == "" {
+				return ErrStepMissingWithField(step.Name, "name")
 			}
 		default:
 			return ErrUnsupportedStepType(step.Name, step.Type)

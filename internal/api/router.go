@@ -2,7 +2,9 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
+	"time"
 )
 
 // ─── 路由 ─────────────────────────────────────────────────
@@ -28,6 +30,8 @@ func NewRouter(handler *Handler) *Router {
 	r.mux.HandleFunc("POST /api/v1/runs", handler.StartRun)
 	r.mux.HandleFunc("GET /api/v1/runs/{id}", handler.GetRun)
 	r.mux.HandleFunc("GET /api/v1/runs/{id}/steps", handler.ListRunSteps)
+	r.mux.HandleFunc("GET /api/v1/runs/{id}/artifacts", handler.ListArtifacts)
+	r.mux.HandleFunc("GET /api/v1/runs/{id}/artifacts/{name}/download", handler.DownloadArtifact)
 	r.mux.HandleFunc("GET /api/v1/runs/{id}/events", handler.StreamRunEvents)
 	r.mux.HandleFunc("POST /api/v1/runs/{id}/cancel", handler.CancelRun)
 	r.mux.HandleFunc("POST /api/v1/pipelines", handler.RunPipeline)
@@ -45,6 +49,51 @@ func NewRouter(handler *Handler) *Router {
 
 // ServeHTTP 实现 http.Handler 接口。
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// TODO: Phase 2 添加 CORS、鉴权、请求日志中间件
-	r.mux.ServeHTTP(w, req)
+	startedAt := time.Now()
+	recorder := &responseRecorder{ResponseWriter: w}
+	r.mux.ServeHTTP(recorder, req)
+
+	slog.Info("api request completed",
+		"method", req.Method,
+		"path", req.URL.Path,
+		"status", recorder.statusCode(),
+		"duration_ms", time.Since(startedAt).Milliseconds(),
+		"remote_addr", req.RemoteAddr,
+	)
+}
+
+// responseRecorder captures the status code while preserving SSE flushing.
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *responseRecorder) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *responseRecorder) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *responseRecorder) Flush() {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *responseRecorder) statusCode() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
 }
