@@ -14,9 +14,9 @@ import (
 
 // ─── SSH 注入常量 ─────────────────────────────────────────
 const (
-	containerSSHDir   = "/miniflow/ssh"       // 容器模式下宿主 ~/.ssh 的挂载点
-	miniflowDir       = ".miniflow"           // workspace 内的 miniflow 管理目录
-	sshDirName        = "ssh"                 // workspace 内 SSH 密钥存放子目录
+	containerSSHDir = "/miniflow/ssh" // 容器模式下宿主 ~/.ssh 的挂载点
+	miniflowDir     = ".miniflow"     // workspace 内的 miniflow 管理目录
+	sshDirName      = "ssh"           // workspace 内 SSH 密钥存放子目录
 )
 
 // ─── 执行引擎 ─────────────────────────────────────────────
@@ -25,6 +25,12 @@ const (
 type Executor struct {
 	containerMgr container.Manager
 	wsManager    *container.WorkspaceManager
+}
+
+// Observer receives best-effort lifecycle callbacks while a pipeline runs.
+type Observer interface {
+	StepStarted(step Step)
+	StepFinished(result StepResult)
 }
 
 // NewExecutor 创建新的执行引擎。
@@ -116,6 +122,11 @@ func (e *Executor) injectSSHKeys(wsPath string) error {
 // Phase 1 仅支持串行执行——一个 Step 执行完再执行下一个。
 // 步骤按拓扑顺序运行，依赖先决条件。
 func (e *Executor) ExecutePipeline(ctx context.Context, p *Pipeline) *PipelineResult {
+	return e.ExecutePipelineWithObserver(ctx, p, nil)
+}
+
+// ExecutePipelineWithObserver 执行整个流水线，并向 observer 推送步骤状态。
+func (e *Executor) ExecutePipelineWithObserver(ctx context.Context, p *Pipeline, observer Observer) *PipelineResult {
 	startedAt := time.Now()
 	slog.Info("starting pipeline",
 		"name", p.Name,
@@ -192,16 +203,26 @@ func (e *Executor) ExecutePipeline(ctx context.Context, p *Pipeline) *PipelineRe
 			result.Status = StatusCancelled
 			// 剩余步骤标记为 skipped
 			for j := i; j < len(sorted); j++ {
-				result.StepResults = append(result.StepResults, StepResult{
+				skipped := StepResult{
 					Name:   sorted[j].Name,
 					Status: StatusSkipped,
-				})
+				}
+				result.StepResults = append(result.StepResults, skipped)
+				if observer != nil {
+					observer.StepFinished(skipped)
+				}
 			}
 			break
 		}
 
+		if observer != nil {
+			observer.StepStarted(step)
+		}
 		stepResult := e.executeStep(ctx, step, wsPath, workDir)
 		result.StepResults = append(result.StepResults, stepResult)
+		if observer != nil {
+			observer.StepFinished(stepResult)
+		}
 
 		slog.Info("step completed",
 			"step", step.Name,
@@ -218,10 +239,14 @@ func (e *Executor) ExecutePipeline(ctx context.Context, p *Pipeline) *PipelineRe
 			result.Status = StatusFailed
 			// 剩余步骤标记为 skipped
 			for j := i + 1; j < len(sorted); j++ {
-				result.StepResults = append(result.StepResults, StepResult{
+				skipped := StepResult{
 					Name:   sorted[j].Name,
 					Status: StatusSkipped,
-				})
+				}
+				result.StepResults = append(result.StepResults, skipped)
+				if observer != nil {
+					observer.StepFinished(skipped)
+				}
 			}
 			break
 		}
@@ -289,12 +314,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, wsPath, workDir s
 
 	// 构建容器配置
 	cfg := container.Config{
-		Image:      step.Image,
-		Commands:   commands,
-		Entrypoint: step.Entrypoint,
-		Env:        env,
-		User:       container.DefaultUID,
-		WorkDir:    workDir,
+		Image:          step.Image,
+		Commands:       commands,
+		Entrypoint:     step.Entrypoint,
+		Env:            env,
+		User:           container.DefaultUID,
+		WorkDir:        workDir,
 		NetworkEnabled: true,
 		Workspace: &container.WorkspaceMount{
 			Source: wsPath,

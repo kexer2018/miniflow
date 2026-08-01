@@ -8,6 +8,7 @@ import (
 	"github.com/kexer2018/miniflow/internal/db"
 	"github.com/kexer2018/miniflow/internal/fixer"
 	"github.com/kexer2018/miniflow/internal/log"
+	runservice "github.com/kexer2018/miniflow/internal/run"
 	"github.com/kexer2018/miniflow/internal/stepregistry"
 	pipelinespec "github.com/kexer2018/miniflow/pkg/pipeline"
 )
@@ -17,6 +18,7 @@ import (
 // Handler 封装 API 请求处理函数。
 type Handler struct {
 	store       db.Store
+	runSvc      *runservice.Service
 	classifier  *log.Classifier
 	sanitizer   *log.Sanitizer
 	diagnoseCfg *fixer.DiagnoseConfig // 可选的诊断配置
@@ -34,6 +36,11 @@ func NewHandler(store db.Store) *Handler {
 // SetDiagnoseConfig 设置诊断引擎配置（启用 AI 诊断能力）。
 func (h *Handler) SetDiagnoseConfig(cfg *fixer.DiagnoseConfig) {
 	h.diagnoseCfg = cfg
+}
+
+// SetRunService 设置异步流水线执行服务。
+func (h *Handler) SetRunService(svc *runservice.Service) {
+	h.runSvc = svc
 }
 
 // ─── 健康检查 ─────────────────────────────────────────────
@@ -82,6 +89,15 @@ func (h *Handler) ValidatePipeline(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) RunPipeline(w http.ResponseWriter, r *http.Request) {
+	h.StartRun(w, r)
+}
+
+func (h *Handler) StartRun(w http.ResponseWriter, r *http.Request) {
+	if h.runSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "run service not configured")
+		return
+	}
+
 	var req RunPipelineRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
@@ -93,12 +109,81 @@ func (h *Handler) RunPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Phase 2 - 异步执行流水线并返回 202 Accepted
-	// 当前仅为骨架，返回成功
-	writeJSON(w, http.StatusAccepted, map[string]string{
-		"status":  "accepted",
-		"message": "pipeline execution not yet implemented in API mode (use CLI)",
-	})
+	run, err := h.runSvc.Start(r.Context(), req.Spec)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "start run: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, run)
+}
+
+func (h *Handler) GetRun(w http.ResponseWriter, r *http.Request) {
+	if h.runSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "run service not configured")
+		return
+	}
+
+	run, ok := h.runSvc.Get(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (h *Handler) ListRunSteps(w http.ResponseWriter, r *http.Request) {
+	if h.runSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "run service not configured")
+		return
+	}
+
+	steps, ok := h.runSvc.Steps(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, steps)
+}
+
+func (h *Handler) StreamRunEvents(w http.ResponseWriter, r *http.Request) {
+	if h.runSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "run service not configured")
+		return
+	}
+
+	events, unsubscribe, ok := h.runSvc.Subscribe(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	defer unsubscribe()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+	}
+
+	for {
+		select {
+		case event := <-events:
+			if err := writeSSEEvent(w, event); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 func (h *Handler) GetPipelineResult(w http.ResponseWriter, r *http.Request) {
@@ -202,4 +287,18 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func writeSSEEvent(w http.ResponseWriter, event runservice.Event) error {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("event: " + string(event.Type) + "\n")); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+		return err
+	}
+	return nil
 }

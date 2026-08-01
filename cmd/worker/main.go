@@ -4,13 +4,19 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/kexer2018/miniflow/internal/api"
 	"github.com/kexer2018/miniflow/internal/container"
+	"github.com/kexer2018/miniflow/internal/db"
+	runservice "github.com/kexer2018/miniflow/internal/run"
 )
 
 // ─── 全局标志 ─────────────────────────────────────────────
@@ -71,20 +77,63 @@ func runWorker(cmd *cobra.Command, args []string) error {
 
 	// 初始化工作空间管理器
 	wsManager := container.NewWorkspaceManager("")
-	_ = wsManager
 
-	// TODO: Phase 2 - 启动 gRPC/REST 服务监听控制面任务
+	dbDir := filepath.Dir(container.WorkspaceBaseDir)
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
+	}
+	store, err := db.NewSQLiteStore(filepath.Join(dbDir, "miniflow.db"))
+	if err != nil {
+		return fmt.Errorf("init store: %w", err)
+	}
+	defer store.Close()
+
+	runSvc := runservice.NewService(store, mgr, wsManager)
+	handler := api.NewHandler(store)
+	handler.SetRunService(runSvc)
+
+	server := &http.Server{
+		Addr:              listenAddr,
+		Handler:           api.NewRouter(handler),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
 	// TODO: Phase 2 - 实现镜像预热队列
 	// TODO: Phase 2 - 实现任务队列与并发限制
 
-	slog.Info("worker ready (Phase 1: CLI-only mode)")
-	slog.Info("worker will serve as container execution backend for CLI")
+	slog.Info("worker ready", "listen", listenAddr)
 	slog.Info("press Ctrl+C to stop")
 
 	// 等待退出信号
 	ctx, cancel := signalContext()
 	defer cancel()
-	<-ctx.Done()
+
+	errCh := make(chan error, 1)
+	go func() {
+		slog.Info("http api listening", "addr", listenAddr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case <-ctx.Done():
+	case err := <-errCh:
+		if err != nil {
+			return fmt.Errorf("serve api: %w", err)
+		}
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shutdown api: %w", err)
+	}
+	if err := <-errCh; err != nil {
+		return fmt.Errorf("serve api: %w", err)
+	}
 
 	slog.Info("worker stopped")
 	return nil

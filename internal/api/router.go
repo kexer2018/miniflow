@@ -25,6 +25,10 @@ func NewRouter(handler *Handler) *Router {
 	r.mux.HandleFunc("POST /api/v1/pipelines/validate", handler.ValidatePipeline)
 
 	// ─── 流水线执行 ────────────────────────────────
+	r.mux.HandleFunc("POST /api/v1/runs", handler.StartRun)
+	r.mux.HandleFunc("GET /api/v1/runs/{id}", handler.GetRun)
+	r.mux.HandleFunc("GET /api/v1/runs/{id}/steps", handler.ListRunSteps)
+	r.mux.HandleFunc("GET /api/v1/runs/{id}/events", handler.StreamRunEvents)
 	r.mux.HandleFunc("POST /api/v1/pipelines", handler.RunPipeline)
 	r.mux.HandleFunc("GET /api/v1/pipelines/{id}", handler.GetPipelineResult)
 	r.mux.HandleFunc("GET /api/v1/pipelines", handler.ListPipelineResults)
