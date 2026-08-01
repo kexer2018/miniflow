@@ -1,11 +1,13 @@
-# miniflow — AI 原生轻量级 CI/CD 执行引擎
+# miniflow — Docker-native 轻量级 CI/CD 执行平台
 
-[![Go Version](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**miniflow** 是一个 AI 原生的轻量级 CI/CD 执行引擎，使用 Go 编写。它解析基于 DAG（有向无环图）的流水线定义（JSON），在本地 Docker 容器中按拓扑顺序执行各步骤，实时采集日志，并通过可插拔的 LLM 层进行智能错误分析与自动修复。
+**miniflow** 是一个 Docker-native、single-node-first、script-first 的轻量级 CI/CD 执行平台，使用 Go 编写。它解析基于 DAG（有向无环图）的流水线定义（JSON），在本地 Docker 容器中按拓扑顺序执行各步骤，实时采集日志，并通过可插拔的 LLM 层提供智能错误分析与修复建议。
 
-> ⚡ **设计理念**：相比 Jenkins/GitHub Actions 等重量级 CI/CD 系统，miniflow 追求极致的简洁——一条命令启动，一个 JSON 文件定义流水线，依赖仅需 Docker。它为 AI 时代而生，内置日志脱敏、确定性分类和 LLM 驱动修复管道。
+> ⚡ **设计理念**：相比 Jenkins/GitHub Actions 等重量级 CI/CD 系统，miniflow 追求极致的简洁——一条命令启动，一个 JSON 文件定义流水线，主执行依赖仅需 Docker。AI 是失败诊断和字段建议的增强能力，不是近期主交互入口。
+
+核心产品原则见 [docs/product-principles.md](docs/product-principles.md)。后续开发应优先满足这些原则：Docker 主路径、单机优先、脚本优先、图形化只提供基础 Step、PipelineSpec 作为稳定协议。
 
 ---
 
@@ -18,9 +20,9 @@
 - **日志分类** — 确定性信号词引擎，区分应用错误（`app_error`）与基础设施错误（`infra_error`）
 - **缓存支持** — 步骤级缓存挂载，支持基于内容的缓存键
 - **RAG 种子案例** — YAML 格式的错误模式库，用于 AI 修复引擎的知识检索
-- **REST API 骨架** — 健康检查、流水线历史查询、修复建议接口（Phase 2 预留）
+- **REST API 骨架** — 健康检查、流水线历史查询、修复建议接口（为 Run API 与可视化编辑器预留）
 - **SQLite 持久化** — 纯 Go SQLite 驱动，零依赖，流水线执行结果持久化存储
-- **双入口设计** — CLI 工具 + 守护进程（Worker），为分布式架构预留
+- **双入口设计** — CLI 工具 + 守护进程骨架；Worker/分布式能力明确后置
 
 ## 架构
 
@@ -70,7 +72,7 @@
 
 ### 前置条件
 
-- **Go 1.23+**（构建需要）
+- **Go 1.25+**（构建需要，以 `go.mod` 为准）
 - **Docker**（运行时需要，支持 OrbStack / Docker Desktop / 标准 Docker）
 - **无需 CGO**（纯 Go SQLite 驱动 `modernc.org/sqlite`）
 
@@ -310,8 +312,10 @@ OrbStack 是 macOS 上比 Docker Desktop 更轻量的替代方案，macOS 开发
 | Phase | 特性 | 状态 |
 |-------|------|------|
 | 1 | DAG 解析 + 串行容器执行 + 日志管道 | ✅ 完成 |
-| 1B | LLM 错误分析 + AI 自动修复 + RAG 引擎 | 🔧 开发中 |
-| 2 | Worker 守护进程 + 分布式任务队列 + Web UI | 📋 规划中 |
+| 1B | 日志脱敏 + 分类 + RAG/LLM 失败诊断 | 🔧 开发中 |
+| 2 | Step Type Registry + Run API + 日志流 | 📋 规划中 |
+| 3 | Artifact/Cache/Secret 产品化 + 可视化编辑器 MVP | 📋 规划中 |
+| Later | Worker/分布式、插件市场、自然语言编排 | 🕒 后置 |
 
 ## 依赖
 

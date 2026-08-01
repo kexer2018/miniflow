@@ -3,6 +3,7 @@
 > 版本: v0.1
 > 日期: 2026-07-31
 > 状态: 产品与技术设计草案
+> 上层约束: 以 `docs/product-principles.md` 为准
 
 ---
 
@@ -10,7 +11,7 @@
 
 miniflow 的产品定位不是“内置业务逻辑的 CI/CD 平台”，而是：
 
-> 一个可视化、容器化、可扩展的流水线执行平台。
+> 一个 Docker-native、single-node-first、script-first 的轻量级 CI/CD 执行平台。
 
 miniflow 负责提供平台能力：图形化编排、DAG 校验、容器化执行、共享工作空间、缓存、产物、密钥、日志、运行历史和失败诊断。用户负责提供自己的业务逻辑：脚本、命令、仓库、镜像、部署策略和团队流程。
 
@@ -24,6 +25,7 @@ miniflow 负责提供平台能力：图形化编排、DAG 校验、容器化执�
 4. 内置 Step 是可编辑模板，不是封闭能力。
 5. Shell Script 永远是兜底能力，高级用户可以绕过表单直接写命令。
 6. UI 负责降低配置成本和错误率，底层 spec 仍然是稳定协议。
+7. 单机 Docker 执行闭环优先于分布式 Worker、插件市场和非 Docker executor。
 
 ---
 
@@ -136,7 +138,7 @@ container.Config
 StepResult
 ```
 
-这样 UI、API、CLI 和 Worker 可以共用同一套 Step 定义，避免前后端各自理解一套字段。
+这样 UI、API 和 CLI 可以共用同一套 Step 定义，避免前后端各自理解一套字段。Worker 未来也应复用这套定义，但不进入近期主线。
 
 ---
 
@@ -816,6 +818,10 @@ Step Registry 应先以内置注册表实现。等基础 Step 稳定后，再考
 ### 10.5 高级能力延后
 
 Matrix、条件执行、并行 group、部署适配器都很有价值，但不应进入第一版基础 Step。第一版目标是让用户能用图形化方式完成最常见的 checkout、script、cache、artifact、docker、webhook 流程。
+
+### 10.6 分布式与非 Docker executor 后置
+
+分布式 Worker、Shell/macOS/Windows executor、远程 artifact store 和缓存亲和性调度都不进入近期主线。第一阶段必须先把单机 Docker workspace 模型、Run API、日志流、artifact/cache/secret 本地产品化和基础 Step 做稳定。
 
 ---
 

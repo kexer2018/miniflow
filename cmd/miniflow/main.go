@@ -8,9 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
-	"time"
 
 	"syscall"
 
@@ -26,7 +24,7 @@ import (
 	internalpipeline "github.com/kexer2018/miniflow/internal/pipeline"
 	"github.com/kexer2018/miniflow/internal/secret"
 	"github.com/kexer2018/miniflow/internal/source"
-	"github.com/kexer2018/miniflow/internal/stepregistry"
+	"github.com/kexer2018/miniflow/internal/speccompiler"
 	pipelinespec "github.com/kexer2018/miniflow/pkg/pipeline"
 )
 
@@ -64,8 +62,8 @@ func main() {
 
 	rootCmd := &cobra.Command{
 		Use:   "miniflow",
-		Short: "AI-native lightweight CI/CD execution engine",
-		Long:  `miniflow — AI 原生轻量级 CI/CD 执行引擎`,
+		Short: "Docker-native lightweight CI/CD execution platform",
+		Long:  `miniflow — Docker-native 轻量级 CI/CD 执行平台`,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			initLogger()
 		},
@@ -151,13 +149,18 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 
 	// ── 构建流水线 ──────────────────────────────────────
 	// 将 pipeline 级 Env、step Secrets 解析合并到步骤 env 中
+	steps, err := speccompiler.BuildSteps(spec, credStore)
+	if err != nil {
+		return fmt.Errorf("compile pipeline spec: %w", err)
+	}
+
 	p := &internalpipeline.Pipeline{
 		ID:        uuid.New().String(),
 		Name:      spec.Name,
 		Version:   spec.Version,
 		Workspace: spec.Workspace,
 		Status:    internalpipeline.StatusPending,
-		Steps:     buildSteps(spec, credStore),
+		Steps:     steps,
 	}
 
 	ctx, cancel := signalContext()
@@ -431,106 +434,6 @@ func readPipelineSpec(path string) (*pipelinespec.PipelineSpec, error) {
 	}
 
 	return &spec, nil
-}
-
-// parseEnvFile 读取并解析 .env 文件，返回 KEY=VALUE 格式列表。
-// 支持：KEY=VALUE 行、# 注释、空行跳过。
-func parseEnvFile(path string) ([]string, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return nil, fmt.Errorf("read env_file: %w", err)
-	}
-
-	var result []string
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if !strings.Contains(line, "=") {
-			slog.Warn("env_file: skipping line without '='", "line", line)
-			continue
-		}
-		result = append(result, line)
-	}
-
-	slog.Debug("env_file parsed", "path", path, "pairs", len(result))
-	return result, nil
-}
-
-// buildSteps converts PipelineSpec to engine Step list,
-// merging pipeline-level env and resolving secrets.
-func buildSteps(spec *pipelinespec.PipelineSpec, credStore *secret.CredentialStore) []internalpipeline.Step {
-	// 收集 pipeline-level 环境变量（spec.Env）
-	pipelineEnv := make([]string, 0, len(spec.Env))
-	keys := make([]string, 0, len(spec.Env))
-	for k := range spec.Env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		pipelineEnv = append(pipelineEnv, k+"="+spec.Env[k])
-	}
-
-	// 如果指定了 env_file，解析并合并（spec.Env 优先级更高）
-	if spec.EnvFile != "" {
-		envFilePairs, err := parseEnvFile(spec.EnvFile)
-		if err != nil {
-			slog.Warn("failed to read env_file, skipping", "path", spec.EnvFile, "error", err)
-		} else {
-			// 构建映射：env_file 先，spec.Env 覆盖
-			envMap := make(map[string]string, len(envFilePairs)+len(spec.Env))
-			for _, pair := range envFilePairs {
-				if k, v, ok := strings.Cut(pair, "="); ok {
-					envMap[k] = v
-				}
-			}
-			for k, v := range spec.Env {
-				envMap[k] = v // spec.Env 优先级更高
-			}
-			// 重建 pipelineEnv
-			mergedKeys := make([]string, 0, len(envMap))
-			for k := range envMap {
-				mergedKeys = append(mergedKeys, k)
-			}
-			sort.Strings(mergedKeys)
-			pipelineEnv = make([]string, 0, len(mergedKeys))
-			for _, k := range mergedKeys {
-				pipelineEnv = append(pipelineEnv, k+"="+envMap[k])
-			}
-		}
-	}
-
-	steps := make([]internalpipeline.Step, len(spec.Steps))
-	for i, s := range spec.Steps {
-		env := make([]string, len(pipelineEnv), len(pipelineEnv)+len(s.Env)+len(s.Secrets))
-		copy(env, pipelineEnv)
-		env = append(env, s.Env...)
-
-		for _, secName := range s.Secrets {
-			if val, ok := credStore.ResolveSecretEnv(secName); ok {
-				env = append(env, val)
-			} else {
-				slog.Warn("secret not found, skipping",
-					"secret", secName, "step", s.Name)
-			}
-		}
-
-		step, err := stepregistry.Compile(s)
-		if err != nil {
-			slog.Warn("failed to compile step", "step", s.Name, "error", err)
-		}
-		step.Env = env
-		step.Timeout = time.Duration(s.Timeout) * time.Second
-		if s.Cache != nil {
-			step.Cache = &internalpipeline.Cache{
-				Path: s.Cache.Path,
-				Key:  s.Cache.Key,
-			}
-		}
-		steps[i] = step
-	}
-	return steps
 }
 
 func signalContext() (context.Context, context.CancelFunc) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,9 +19,16 @@ import (
 type fakeRunContainerManager struct {
 	outputs       []container.Result
 	respectCancel bool
+	calls         int
+	blockAfter    int
 }
 
 func (m *fakeRunContainerManager) RunContainer(ctx context.Context, cfg container.Config) (container.Result, error) {
+	m.calls++
+	if m.blockAfter > 0 && m.calls >= m.blockAfter {
+		<-ctx.Done()
+		return container.Result{ExitCode: -1, Output: ctx.Err().Error()}, ctx.Err()
+	}
 	if m.respectCancel {
 		select {
 		case <-ctx.Done():
@@ -48,6 +56,14 @@ func (m *fakeRunContainerManager) Close() error {
 	return nil
 }
 
+type fakeDockerHealth struct {
+	err error
+}
+
+func (h fakeDockerHealth) HealthCheck(ctx context.Context) error {
+	return h.err
+}
+
 func TestRouterListsStepTypes(t *testing.T) {
 	router := NewRouter(NewHandler(nil))
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/step-types", nil)
@@ -73,6 +89,49 @@ func TestRouterListsStepTypes(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected script.run in step type list, got %#v", body)
+	}
+}
+
+func TestHealthCheckIncludesDockerStatus(t *testing.T) {
+	handler := NewHandler(nil)
+	handler.SetDockerHealthChecker(fakeDockerHealth{})
+	router := NewRouter(handler)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	docker, ok := body["docker"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected docker object, got %#v", body)
+	}
+	if docker["reachable"] != true {
+		t.Fatalf("expected docker reachable true, got %#v", docker)
+	}
+}
+
+func TestHealthCheckReportsDockerFailure(t *testing.T) {
+	handler := NewHandler(nil)
+	handler.SetDockerHealthChecker(fakeDockerHealth{err: errors.New("docker unavailable")})
+	router := NewRouter(handler)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "docker unavailable") {
+		t.Fatalf("expected docker error in response, got %q", rec.Body.String())
 	}
 }
 
@@ -205,6 +264,28 @@ func TestRouterStartRunDetachesFromRequestContext(t *testing.T) {
 		t.Fatalf("decode start response: %v", err)
 	}
 	waitForRunStatus(t, router, body.ID, string(runservice.StatusSuccess))
+}
+
+func TestRouterCancelsRun(t *testing.T) {
+	handler := NewHandler(nil)
+	handler.SetRunService(runservice.NewService(nil, &fakeRunContainerManager{
+		outputs: []container.Result{
+			{Output: "", ExitCode: 0},
+		},
+		blockAfter: 2,
+	}, container.NewWorkspaceManager(t.TempDir())))
+	router := NewRouter(handler)
+
+	runID := startTestRun(t, router)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+runID+"/cancel", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	waitForRunStatus(t, router, runID, string(runservice.StatusCancelled))
 }
 
 func startTestRun(t *testing.T, router http.Handler) string {

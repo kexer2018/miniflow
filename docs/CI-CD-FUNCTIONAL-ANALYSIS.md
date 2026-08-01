@@ -3,6 +3,7 @@
 > 版本: v0.2
 > 日期: 2026-07-31
 > 定位: 可视化、容器化、可扩展的流水线执行平台
+> 上层约束: 以 `docs/product-principles.md` 为准
 
 ---
 
@@ -10,9 +11,11 @@
 
 miniflow 不应该被定位成“替用户写业务流程的 AI CI/CD 系统”，而应该定位成：
 
-> 一个可视化、容器化、可扩展的流水线执行平台。
+> 一个 Docker-native、single-node-first、script-first 的轻量级 CI/CD 执行平台。
 
 产品的核心价值是把流水线从 JSON/YAML 心智模型转成图形化编排模型，并提供可靠的 Docker 执行环境。用户通过拖拽 Step、连线、配置参数来生成流水线；后端负责 DAG 校验、容器执行、共享 workspace、日志、缓存、产物和诊断。
+
+这份分析必须服从五条边界：Docker 主路径、单机优先、脚本优先、图形化只提供基础 Step、PipelineSpec 作为稳定协议。
 
 ### 1.1 产品边界
 
@@ -32,6 +35,8 @@ miniflow 不提供：
 - 隐式修改用户业务脚本
 - 早期就做庞大的插件市场
 - 把聊天框作为主交互入口
+- 早期分布式 Worker 调度
+- 近期非 Docker executor
 
 ### 1.2 与传统 CI/CD 的区别
 
@@ -63,7 +68,7 @@ miniflow 不提供：
 | SQLite | pipeline result、exec context、diagnosis history | 需要扩展 run/artifact/cache 表 |
 | CLI | run、version、diagnose；validate 当前 flag 绑定需修复 | CLI 继续作为开发者入口 |
 | API | health、history、diagnose、fix suggest 骨架 | 需要真正 run API 和状态流 |
-| Worker | daemon skeleton | 后续作为分布式执行基础 |
+| Worker | daemon skeleton | 远期作为分布式执行基础，近期不进入主线 |
 
 ### 2.2 关键过期认知修正
 
@@ -72,6 +77,8 @@ miniflow 不提供：
 - “无 Git 源码拉取”已过期。当前已有 `internal/source` 实现，缺的是产品化 Step 和 UI。
 - “AI 原生是主线”需要降级为差异化能力。主线应是可视化流水线平台。
 - “自然语言编排”不应作为近期核心路径，应在 Step Registry 和图形化编辑器稳定后再做。
+- “Worker/分布式执行”不应作为近期核心路径，应在单机 Run API、Artifact/Cache/Secret 模型稳定后再做。
+- “Shell/macOS/Windows executor”只能作为远期例外设计，近期主执行生态仍是 Docker。
 - 当前 Go 版本以 `go.mod` 为准，为 Go 1.25。
 - Step timeout 字段和执行逻辑已有基础，缺的是完整 UI/API、管道级 timeout 和运行历史表达。
 
@@ -354,6 +361,15 @@ AI 仍然重要，但不是第一入口。
 - HTTP request。
 - Manual approval。
 - Notification webhook。
+
+### Later: 高级执行形态
+
+- 分布式 Worker。
+- 非 Docker executor。
+- 插件市场。
+- 自然语言生成整条流水线。
+
+这些能力只有在单机 Docker 产品闭环稳定后才能重新评估。
 
 ---
 

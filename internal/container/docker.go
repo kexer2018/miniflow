@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -22,10 +23,10 @@ import (
 var dockerSocketCandidates = func() []string {
 	home, _ := os.UserHomeDir()
 	candidates := []string{
-		"/var/run/docker.sock",                               // 默认
-		filepath.Join(home, ".orbstack/run/docker.sock"),     // OrbStack
-		filepath.Join(home, ".docker/run/docker.sock"),       // Docker Desktop (rootless)
-		"/run/user/1000/docker.sock",                         // Rootless Docker
+		"/var/run/docker.sock",                           // 默认
+		filepath.Join(home, ".orbstack/run/docker.sock"), // OrbStack
+		filepath.Join(home, ".docker/run/docker.sock"),   // Docker Desktop (rootless)
+		"/run/user/1000/docker.sock",                     // Rootless Docker
 	}
 	if dh := os.Getenv("DOCKER_HOST"); dh != "" {
 		candidates = append([]string{dh}, candidates...)
@@ -243,8 +244,21 @@ func (m *DockerManager) Close() error {
 	return m.cli.Close()
 }
 
+// HealthCheck verifies that the Docker daemon is reachable.
+func (m *DockerManager) HealthCheck(ctx context.Context) error {
+	if m == nil {
+		return fmt.Errorf("docker manager is nil")
+	}
+	return m.ping(ctx)
+}
+
 // cleanupContainer 删除容器（忽略错误，容器可能已被删除）。
 func (m *DockerManager) cleanupContainer(ctx context.Context, containerID string) {
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+	}
 	if err := m.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{
 		Force: true,
 	}); err != nil {
@@ -295,7 +309,6 @@ func buildMounts(cfg Config) []mount.Mount {
 			ReadOnly: cm.ReadOnly,
 		})
 	}
-
 
 	return mounts
 }

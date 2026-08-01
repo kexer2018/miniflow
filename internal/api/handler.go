@@ -2,8 +2,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/kexer2018/miniflow/internal/db"
 	"github.com/kexer2018/miniflow/internal/fixer"
@@ -22,6 +24,11 @@ type Handler struct {
 	classifier  *log.Classifier
 	sanitizer   *log.Sanitizer
 	diagnoseCfg *fixer.DiagnoseConfig // 可选的诊断配置
+	docker      healthChecker
+}
+
+type healthChecker interface {
+	HealthCheck(ctx context.Context) error
 }
 
 // NewHandler 创建 API 处理器。
@@ -43,12 +50,37 @@ func (h *Handler) SetRunService(svc *runservice.Service) {
 	h.runSvc = svc
 }
 
+// SetDockerHealthChecker 设置 /healthz 使用的 Docker 可达性检查器。
+func (h *Handler) SetDockerHealthChecker(checker healthChecker) {
+	h.docker = checker
+}
+
 // ─── 健康检查 ─────────────────────────────────────────────
 
 func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
-		"status":  "ok",
+	dockerStatus := map[string]any{
+		"configured": h.docker != nil,
+		"reachable":  false,
+	}
+	status := "ok"
+	httpStatus := http.StatusOK
+
+	if h.docker != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := h.docker.HealthCheck(ctx); err != nil {
+			status = "degraded"
+			httpStatus = http.StatusServiceUnavailable
+			dockerStatus["error"] = err.Error()
+		} else {
+			dockerStatus["reachable"] = true
+		}
+	}
+
+	writeJSON(w, httpStatus, map[string]any{
+		"status":  status,
 		"version": "0.1.0-alpha",
+		"docker":  dockerStatus,
 	})
 }
 
@@ -146,6 +178,21 @@ func (h *Handler) ListRunSteps(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, steps)
+}
+
+func (h *Handler) CancelRun(w http.ResponseWriter, r *http.Request) {
+	if h.runSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "run service not configured")
+		return
+	}
+
+	run, ok := h.runSvc.Cancel(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, run)
 }
 
 func (h *Handler) StreamRunEvents(w http.ResponseWriter, r *http.Request) {

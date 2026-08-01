@@ -2,6 +2,7 @@
 
 > 日期: 2026-07-31
 > 状态: 产品化架构白皮书
+> 上层约束: 以 `docs/product-principles.md` 为准
 
 ---
 
@@ -25,7 +26,9 @@ miniflow 的核心机会不是再做一个庞大的 CI/CD 平台，而是把流�
 
 miniflow 的定位是：
 
-> 可视化、容器化、可扩展的流水线执行平台。
+> Docker-native、single-node-first、script-first 的轻量级 CI/CD 执行平台。
+
+白皮书中的所有架构设计都必须服从：Docker 主路径、单机优先、脚本优先、图形化只提供基础 Step、PipelineSpec 作为稳定协议。
 
 ### 2.1 平台负责什么
 
@@ -51,6 +54,8 @@ miniflow 的定位是：
 ### 2.3 明确不做什么
 
 miniflow 不应该把核心能力设计成大量业务模板。内置 Step 应保持通用，如 `script.run`、`git.checkout`、`docker.build`、`http.request`。特定业务流程应留给用户脚本、镜像或后续插件。
+
+近期也不应把分布式 Worker、非 Docker executor、插件市场或自然语言整图生成放进主路径。这些能力只能在单机 Docker 产品闭环稳定后重新评估。
 
 ---
 
@@ -341,6 +346,9 @@ Phase F  可视化编辑器 MVP
 
 Phase G  集成 Step
          docker.build、docker.push、http.request、approval、notify
+
+Later    高级执行与生态
+         分布式 Worker、非 Docker executor、插件市场、自然语言编排
 ```
 
 ---
@@ -367,4 +375,4 @@ Phase G  集成 Step
 
 ### 11.3 结论
 
-miniflow 当前已经具备产品化的执行内核。最合理的下一步不是继续堆 AI 能力，也不是先做分布式，而是建立 typed Step、Run API、实时日志、artifact/cache/secret 和可视化编辑器。这样项目会从“能跑 JSON 的 CLI 工具”变成“用户愿意使用的流水线产品”。
+miniflow 当前已经具备产品化的执行内核。最合理的下一步不是继续堆 AI 能力，也不是先做分布式或非 Docker executor，而是建立 typed Step、Run API、实时日志、artifact/cache/secret 和可视化编辑器。这样项目会从“能跑 JSON 的 CLI 工具”变成“用户愿意使用的流水线产品”。

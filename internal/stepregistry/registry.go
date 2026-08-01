@@ -31,10 +31,6 @@ func Builtins() []Definition {
 			Name:        "Shell Script",
 			Group:       "Script",
 			Description: "Run a user-provided script in an ephemeral Docker container.",
-			Defaults: map[string]any{
-				"shell":   "sh",
-				"workdir": "/workspace",
-			},
 			Schema: map[string]any{
 				"type": "object",
 				"required": []string{
@@ -44,17 +40,6 @@ func Builtins() []Definition {
 					"script": map[string]any{
 						"type":        "string",
 						"description": "Script content to execute.",
-					},
-					"shell": map[string]any{
-						"type":        "string",
-						"description": "Shell executable name.",
-						"enum":        []string{"sh", "bash"},
-						"default":     "sh",
-					},
-					"workdir": map[string]any{
-						"type":        "string",
-						"description": "Container working directory.",
-						"default":     "/workspace",
 					},
 				},
 			},

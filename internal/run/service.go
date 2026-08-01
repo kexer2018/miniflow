@@ -10,8 +10,11 @@ import (
 
 	"github.com/kexer2018/miniflow/internal/container"
 	"github.com/kexer2018/miniflow/internal/db"
+	logutil "github.com/kexer2018/miniflow/internal/log"
 	internalpipeline "github.com/kexer2018/miniflow/internal/pipeline"
-	"github.com/kexer2018/miniflow/internal/stepregistry"
+	"github.com/kexer2018/miniflow/internal/secret"
+	"github.com/kexer2018/miniflow/internal/source"
+	"github.com/kexer2018/miniflow/internal/speccompiler"
 	pipelinespec "github.com/kexer2018/miniflow/pkg/pipeline"
 )
 
@@ -19,12 +22,14 @@ type Service struct {
 	store     db.Store
 	mgr       container.Manager
 	wsManager *container.WorkspaceManager
+	credStore *secret.CredentialStore
 
 	mu          sync.RWMutex
 	runs        map[string]*Run
 	steps       map[string][]StepRun
 	history     map[string][]Event
 	subscribers map[string]map[chan Event]struct{}
+	cancels     map[string]context.CancelFunc
 }
 
 func NewService(store db.Store, mgr container.Manager, ws *container.WorkspaceManager) *Service {
@@ -35,11 +40,21 @@ func NewService(store db.Store, mgr container.Manager, ws *container.WorkspaceMa
 		store:       store,
 		mgr:         mgr,
 		wsManager:   ws,
+		credStore:   secret.NewCredentialStore(),
 		runs:        make(map[string]*Run),
 		steps:       make(map[string][]StepRun),
 		history:     make(map[string][]Event),
 		subscribers: make(map[string]map[chan Event]struct{}),
+		cancels:     make(map[string]context.CancelFunc),
 	}
+}
+
+// SetCredentialStore sets the secret/source credential resolver used by API runs.
+func (s *Service) SetCredentialStore(store *secret.CredentialStore) {
+	if store == nil {
+		store = secret.NewCredentialStore()
+	}
+	s.credStore = store
 }
 
 func (s *Service) Start(ctx context.Context, spec pipelinespec.PipelineSpec) (*Run, error) {
@@ -72,9 +87,38 @@ func (s *Service) Start(ctx context.Context, spec pipelinespec.PipelineSpec) (*R
 	created := cloneRun(run)
 	s.publish(Event{Type: EventRunStatus, RunID: id, Status: StatusQueued, Time: now})
 
-	go s.execute(context.WithoutCancel(ctx), id, spec)
+	execCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	s.mu.Lock()
+	s.cancels[id] = cancel
+	s.mu.Unlock()
+
+	go s.execute(execCtx, id, spec)
 
 	return created, nil
+}
+
+func (s *Service) Cancel(id string) (*Run, bool) {
+	s.mu.Lock()
+	run, ok := s.runs[id]
+	if !ok {
+		s.mu.Unlock()
+		return nil, false
+	}
+	cancel := s.cancels[id]
+	active := run.Status == StatusQueued || run.Status == StatusRunning
+	if active {
+		run.Status = StatusCancelled
+	}
+	copied := cloneRun(run)
+	s.mu.Unlock()
+
+	if active && cancel != nil {
+		cancel()
+	}
+	if active {
+		s.publish(Event{Type: EventRunStatus, RunID: id, Status: StatusCancelled, Time: time.Now()})
+	}
+	return copied, true
 }
 
 func (s *Service) Get(id string) (*Run, bool) {
@@ -129,10 +173,23 @@ func (s *Service) execute(ctx context.Context, runID string, spec pipelinespec.P
 	s.updateRun(runID, StatusRunning, "")
 	s.publish(Event{Type: EventRunStatus, RunID: runID, Status: StatusRunning, Time: time.Now()})
 
-	steps, err := compileSteps(spec)
+	steps, err := speccompiler.BuildSteps(&spec, s.credStore)
 	if err != nil {
 		s.finishRun(runID, StatusFailed, err.Error(), nil)
 		return
+	}
+
+	if spec.Source != nil {
+		wsPath, err := s.wsManager.CreateWorkspace(runID)
+		if err != nil {
+			s.finishRun(runID, StatusFailed, fmt.Sprintf("create workspace: %v", err), nil)
+			return
+		}
+		sourceMgr := source.NewManager(s.credStore)
+		if _, err := sourceMgr.PrepareWorkspace(ctx, spec.Source, wsPath); err != nil {
+			s.finishRun(runID, StatusFailed, fmt.Sprintf("source checkout: %v", err), nil)
+			return
+		}
 	}
 
 	p := &internalpipeline.Pipeline{
@@ -146,31 +203,13 @@ func (s *Service) execute(ctx context.Context, runID string, spec pipelinespec.P
 
 	executor := internalpipeline.NewExecutor(s.mgr, s.wsManager)
 	result := executor.ExecutePipelineWithObserver(ctx, p, &observer{service: s, runID: runID})
+	sanitizePipelineResult(result)
 
 	finalStatus := convertStatus(result.Status)
 	if s.store != nil {
 		_ = s.store.SavePipelineResult(ctx, result)
 	}
 	s.finishRun(runID, finalStatus, "", result)
-}
-
-func compileSteps(spec pipelinespec.PipelineSpec) ([]internalpipeline.Step, error) {
-	steps := make([]internalpipeline.Step, len(spec.Steps))
-	for i, stepSpec := range spec.Steps {
-		step, err := stepregistry.Compile(stepSpec)
-		if err != nil {
-			return nil, err
-		}
-		step.Timeout = time.Duration(stepSpec.Timeout) * time.Second
-		if stepSpec.Cache != nil {
-			step.Cache = &internalpipeline.Cache{
-				Path: stepSpec.Cache.Path,
-				Key:  stepSpec.Cache.Key,
-			}
-		}
-		steps[i] = step
-	}
-	return steps, nil
 }
 
 type observer struct {
@@ -203,13 +242,28 @@ func (o *observer) StepFinished(result internalpipeline.StepResult) {
 		Time:       time.Now(),
 	})
 	if result.RawLog != "" {
+		message := result.Sanitized
+		if message == "" {
+			message = logutil.SanitizeString(result.RawLog)
+		}
 		o.service.publish(Event{
 			Type:    EventLog,
 			RunID:   o.runID,
 			Step:    result.Name,
-			Message: result.RawLog,
+			Message: message,
 			Time:    time.Now(),
 		})
+	}
+}
+
+func sanitizePipelineResult(result *internalpipeline.PipelineResult) {
+	if result == nil {
+		return
+	}
+	for i := range result.StepResults {
+		if result.StepResults[i].RawLog != "" && result.StepResults[i].Sanitized == "" {
+			result.StepResults[i].Sanitized = logutil.SanitizeString(result.StepResults[i].RawLog)
+		}
 	}
 }
 
@@ -236,6 +290,7 @@ func (s *Service) finishRun(runID string, status Status, errText string, result 
 			run.DurationMs = now.Sub(run.StartedAt).Milliseconds()
 		}
 	}
+	delete(s.cancels, runID)
 	s.mu.Unlock()
 
 	event := Event{Type: EventRunDone, RunID: runID, Status: status, Message: errText, Time: now}

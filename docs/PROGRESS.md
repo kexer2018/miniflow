@@ -3,6 +3,7 @@
 > 日期: 2026-07-31
 > 当前阶段: 执行内核已具备，产品化设计启动
 > Go 版本: 以 `go.mod` 为准，当前为 Go 1.25
+> 上层约束: 以 `docs/product-principles.md` 为准
 
 ---
 
@@ -10,9 +11,11 @@
 
 miniflow 当前定位为：
 
-> 可视化、容器化、可扩展的流水线执行平台。
+> Docker-native、single-node-first、script-first 的轻量级 CI/CD 执行平台。
 
 项目不以内置业务流程为核心，而是提供通用平台原语：Step 编排、DAG 校验、Docker 容器执行、共享 workspace、缓存、产物、密钥、日志、运行历史和失败诊断。用户的业务逻辑应保留在自己的脚本、仓库和 Docker 镜像中。
+
+后续开发必须优先满足：Docker 主路径、单机优先、脚本优先、图形化只提供基础 Step、PipelineSpec 作为稳定协议。
 
 ---
 
@@ -116,7 +119,7 @@ Pipeline JSON
 | cache 只有挂载语义 | 缺 restore/save、hit/miss | 增加 cache key 解析和状态记录 |
 | 无日志流 API | 图形化运行体验不足 | 基于 collector 增加 SSE/WebSocket |
 | Secret 管理仍偏本地文件 | 产品化 UI 不够 | 增加 Secret/Credential CRUD API |
-| worker 只是 skeleton | 不能分布式执行 | Phase 后置 |
+| worker 只是 skeleton | 暂不影响近期主线 | 分布式 Worker 明确后置 |
 
 ---
 
@@ -183,14 +186,16 @@ go build -o /tmp/miniflow-worker-check ./cmd/worker
 
 | 文档 | 用途 |
 |------|------|
+| `docs/product-principles.md` | 产品原则与开发边界，其他文档应服从它 |
 | `docs/basic-steps-and-visual-pipeline-design.md` | 基础 Step 与前端交互设计 |
 | `docs/CI-CD-FUNCTIONAL-ANALYSIS.md` | 产品化功能分析与路线 |
 | `docs/roadmap.md` | 优先级路线图 |
 | `docs/方案设计_实施计划.md` | 分阶段实施方案 |
 | `docs/miniflow AI原生轻量级CICD执行引擎架构与技术白皮书.md` | 架构白皮书 |
+| `docs/执行器双模驱动设计Executor设计指南.md` | 远期非 Docker executor 例外设计，不能指导近期主线 |
 
 ---
 
 ## 8. 当前结论
 
-miniflow 已经不是纯设计草案。CLI、DAG、Docker 执行、workspace、source checkout、日志、诊断和 SQLite 都有可运行基础。下一步不应继续横向扩展 AI 能力，而应把执行内核产品化：Step 类型系统、运行 API、实时日志、artifact/cache/secret 管理和图形化编辑器。
+miniflow 已经不是纯设计草案。CLI、DAG、Docker 执行、workspace、source checkout、日志、诊断和 SQLite 都有可运行基础。下一步不应继续横向扩展 AI、分布式或非 Docker executor，而应把单机 Docker 执行内核产品化：Step 类型系统、运行 API、实时日志、artifact/cache/secret 管理和图形化编辑器。

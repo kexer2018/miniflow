@@ -2,16 +2,18 @@
 
 > 日期: 2026-07-31
 > 主线: 从 CLI 执行器演进为可视化流水线平台
+> 上层约束: 以 `docs/product-principles.md` 为准
 
 ---
 
 ## 1. 路线原则
 
-1. 先产品闭环，再扩展复杂调度。
-2. 先基础 Step 原语，再业务/部署适配器。
-3. 先可靠表单和图形化编辑，再自然语言编排。
-4. 先单机运行体验，再分布式 Worker。
-5. AI 诊断保留为差异化能力，但不抢主路径。
+1. Docker 是主执行生态，非 Docker executor 只作为远期例外。
+2. 先单机运行体验，再考虑分布式 Worker。
+3. 脚本式为主，图形化负责编排、校验、配置和观察。
+4. 图形化只提供基础 Step，不封装用户具体业务逻辑。
+5. PipelineSpec 是 CLI、API、UI 和 AI 辅助共享的稳定协议。
+6. AI 诊断保留为差异化能力，但不抢主路径。
 
 ---
 
@@ -32,7 +34,7 @@
 
 仍缺：
 
-- Typed Step 和 Step Type Registry。
+- Typed Step 和 Step Type Registry（已有 `script.run` 基础，仍需 API/schema 产品化）。
 - 真正可供前端使用的 run API。
 - 实时 step 状态和日志流。
 - Artifact save/restore。
@@ -110,7 +112,7 @@
 
 ## 6. P3: Artifact、Cache、Secret 产品化
 
-目标：把共享 workspace 的隐式传递升级为可见、可管理的输入输出模型。
+目标：在保持单机共享 workspace 简单性的前提下，把持久化产物、跨 run 缓存和密钥引用升级为可见、可管理的输入输出模型。
 
 任务：
 
@@ -202,6 +204,7 @@ Step：
 - 插件市场。
 - 自然语言生成整条流水线。
 - AI 自动修复并重跑。
+- 非 Docker executor。
 
 高级能力的前置条件是 Step Registry、Run API、Validation API、Artifact/Cache/Secret 模型稳定。
 

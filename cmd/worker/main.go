@@ -17,23 +17,25 @@ import (
 	"github.com/kexer2018/miniflow/internal/container"
 	"github.com/kexer2018/miniflow/internal/db"
 	runservice "github.com/kexer2018/miniflow/internal/run"
+	"github.com/kexer2018/miniflow/internal/secret"
 )
 
 // ─── 全局标志 ─────────────────────────────────────────────
 
 var (
-	verbose    bool
-	listenAddr string
-	workerID   string
+	verbose         bool
+	listenAddr      string
+	workerID        string
+	credentialsFile string
 )
 
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "miniflow-worker",
-		Short: "miniflow worker daemon",
-		Long: `miniflow worker 守护进程
+		Short: "miniflow local Docker API runner",
+		Long: `miniflow 本地 Docker API runner
 
-接收控制面下发的 JSON 任务，调度临时容器执行并返回结果。`,
+提供本机 HTTP API，用同一个 Docker workspace 模型执行 PipelineSpec。`,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			initLogger()
 		},
@@ -42,7 +44,8 @@ func main() {
 
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	rootCmd.Flags().StringVarP(&listenAddr, "listen", "l", ":9090", "worker listen address")
-	rootCmd.Flags().StringVarP(&workerID, "id", "i", "", "worker node ID (default: hostname)")
+	rootCmd.Flags().StringVarP(&workerID, "id", "i", "", "local runner ID (default: hostname)")
+	rootCmd.Flags().StringVar(&credentialsFile, "credentials", "", "credentials file path (JSON)")
 
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "version",
@@ -74,6 +77,12 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("init docker: %w", err)
 	}
 	defer mgr.Close()
+	healthCtx, healthCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := mgr.HealthCheck(healthCtx); err != nil {
+		healthCancel()
+		return fmt.Errorf("docker health check failed: %w", err)
+	}
+	healthCancel()
 
 	// 初始化工作空间管理器
 	wsManager := container.NewWorkspaceManager("")
@@ -89,8 +98,10 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	runSvc := runservice.NewService(store, mgr, wsManager)
+	runSvc.SetCredentialStore(secret.MustLoad(resolveCredentialsPath(credentialsFile)))
 	handler := api.NewHandler(store)
 	handler.SetRunService(runSvc)
+	handler.SetDockerHealthChecker(mgr)
 
 	server := &http.Server{
 		Addr:              listenAddr,
@@ -98,8 +109,8 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// TODO: Phase 2 - 实现镜像预热队列
-	// TODO: Phase 2 - 实现任务队列与并发限制
+	// Advanced distributed scheduling and image preheat queues are intentionally
+	// deferred until the single-node Docker product loop is stable.
 
 	slog.Info("worker ready", "listen", listenAddr)
 	slog.Info("press Ctrl+C to stop")
@@ -137,6 +148,17 @@ func runWorker(cmd *cobra.Command, args []string) error {
 
 	slog.Info("worker stopped")
 	return nil
+}
+
+func resolveCredentialsPath(flagPath string) string {
+	if flagPath != "" {
+		return flagPath
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".miniflow", "credentials.json")
 }
 
 func initLogger() {

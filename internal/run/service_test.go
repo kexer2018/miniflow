@@ -107,3 +107,56 @@ func TestServiceStartPublishesRunEvents(t *testing.T) {
 		t.Fatalf("expected one successful step, got %#v", steps)
 	}
 }
+
+func TestServicePublishesSanitizedLogEvents(t *testing.T) {
+	mgr := &fakeContainerManager{
+		outputs: []container.Result{
+			{Output: "", ExitCode: 0}, // workspace chown
+			{Output: "token=ghp_abcdefghijklmnopqrstuvwxyz1234567890AB", ExitCode: 0},
+		},
+	}
+	service := NewService(nil, mgr, container.NewWorkspaceManager(t.TempDir()))
+	spec := pipelinespec.PipelineSpec{
+		Version: "1.1",
+		Name:    "api-run",
+		Steps: []pipelinespec.StepSpec{
+			{
+				Name:  "test",
+				Type:  "script.run",
+				Image: "alpine:latest",
+				With: map[string]any{
+					"script": "echo secret",
+				},
+			},
+		},
+	}
+
+	run, err := service.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, unsubscribe, ok := service.Subscribe(run.ID)
+	if !ok {
+		t.Fatalf("expected subscription for run %s", run.ID)
+	}
+	defer unsubscribe()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Type == EventLog {
+				if event.Message == "token=ghp_abcdefghijklmnopqrstuvwxyz1234567890AB" {
+					t.Fatalf("expected sanitized log event, got raw message")
+				}
+				if event.Message != "token=***GH_TOKEN***" {
+					t.Fatalf("expected GitHub token redaction, got %q", event.Message)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for log event")
+		}
+	}
+}

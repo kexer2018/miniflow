@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kexer2018/miniflow/internal/speccompiler"
 	pipelinespec "github.com/kexer2018/miniflow/pkg/pipeline"
 )
 
@@ -58,7 +59,10 @@ func TestBuildStepsCompilesTypedScriptRun(t *testing.T) {
 		},
 	}
 
-	steps := buildSteps(spec, nil)
+	steps, err := speccompiler.BuildSteps(spec, nil)
+	if err != nil {
+		t.Fatalf("build steps: %v", err)
+	}
 
 	if len(steps) != 1 {
 		t.Fatalf("expected 1 step, got %d", len(steps))

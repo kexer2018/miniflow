@@ -250,6 +250,21 @@ func (e *Executor) ExecutePipelineWithObserver(ctx context.Context, p *Pipeline,
 			}
 			break
 		}
+		if stepResult.Status == StatusCancelled {
+			slog.Warn("step cancelled, stopping pipeline", "step", step.Name)
+			result.Status = StatusCancelled
+			for j := i + 1; j < len(sorted); j++ {
+				skipped := StepResult{
+					Name:   sorted[j].Name,
+					Status: StatusSkipped,
+				}
+				result.StepResults = append(result.StepResults, skipped)
+				if observer != nil {
+					observer.StepFinished(skipped)
+				}
+			}
+			break
+		}
 	}
 
 	// 6. 如果所有步骤都成功，标记为成功
@@ -342,6 +357,15 @@ func (e *Executor) executeStep(ctx context.Context, step Step, wsPath, workDir s
 	durationMs := time.Since(startedAt).Milliseconds()
 
 	if err != nil {
+		if ctx.Err() != nil {
+			return StepResult{
+				Name:       step.Name,
+				Status:     StatusCancelled,
+				ExitCode:   -1,
+				DurationMs: durationMs,
+				Error:      ctx.Err().Error(),
+			}
+		}
 		return StepResult{
 			Name:       step.Name,
 			Status:     StatusFailed,
