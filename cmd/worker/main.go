@@ -4,29 +4,39 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/kexer2018/miniflow/internal/api"
+	"github.com/kexer2018/miniflow/internal/artifact"
 	"github.com/kexer2018/miniflow/internal/container"
 	"github.com/kexer2018/miniflow/internal/db"
 	runservice "github.com/kexer2018/miniflow/internal/run"
 	"github.com/kexer2018/miniflow/internal/secret"
+	"github.com/kexer2018/miniflow/internal/stepregistry"
 )
 
 // ─── 全局标志 ─────────────────────────────────────────────
 
 var (
-	verbose         bool
-	listenAddr      string
-	workerID        string
-	credentialsFile string
+	verbose            bool
+	listenAddr         string
+	workerID           string
+	credentialsFile    string
+	stepDirs           []string
+	apiToken           string
+	apiTokenFile       string
+	workspaceRetention time.Duration
+	cacheRetention     time.Duration
+	artifactRetention  time.Duration
 )
 
 func main() {
@@ -43,9 +53,15 @@ func main() {
 	}
 
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
-	rootCmd.Flags().StringVarP(&listenAddr, "listen", "l", ":9090", "worker listen address")
+	rootCmd.Flags().StringVarP(&listenAddr, "listen", "l", "127.0.0.1:9090", "worker listen address")
 	rootCmd.Flags().StringVarP(&workerID, "id", "i", "", "local runner ID (default: hostname)")
 	rootCmd.Flags().StringVar(&credentialsFile, "credentials", "", "credentials file path (JSON)")
+	rootCmd.Flags().StringSliceVar(&stepDirs, "step-dir", nil, "trusted directory containing third-party Step bundles (repeatable)")
+	rootCmd.Flags().StringVar(&apiToken, "api-token", "", "Bearer token required by the HTTP API")
+	rootCmd.Flags().StringVar(&apiTokenFile, "api-token-file", "", "file containing the HTTP API Bearer token")
+	rootCmd.Flags().DurationVar(&workspaceRetention, "workspace-retention", 7*24*time.Hour, "retain completed workspaces for this duration")
+	rootCmd.Flags().DurationVar(&cacheRetention, "cache-retention", 30*24*time.Hour, "retain inactive caches for this duration")
+	rootCmd.Flags().DurationVar(&artifactRetention, "artifact-retention", 30*24*time.Hour, "retain local artifacts for this duration")
 
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "version",
@@ -61,6 +77,13 @@ func main() {
 }
 
 func runWorker(cmd *cobra.Command, args []string) error {
+	resolvedAPIToken, err := resolveAPIToken(apiToken, apiTokenFile)
+	if err != nil {
+		return err
+	}
+	if !isLoopbackListen(listenAddr) && resolvedAPIToken == "" {
+		return fmt.Errorf("--listen %q is not loopback; configure --api-token or --api-token-file", listenAddr)
+	}
 	if workerID == "" {
 		hostname, _ := os.Hostname()
 		workerID = hostname
@@ -86,6 +109,11 @@ func runWorker(cmd *cobra.Command, args []string) error {
 
 	// 初始化工作空间管理器
 	wsManager := container.NewWorkspaceManager("")
+	registry, err := stepregistry.New(stepDirs...)
+	if err != nil {
+		return fmt.Errorf("load Step registry: %w", err)
+	}
+	slog.Info("Step registry loaded", "types", len(registry.List()), "extension_dirs", len(stepDirs))
 
 	dbDir := filepath.Dir(container.WorkspaceBaseDir)
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
@@ -99,13 +127,17 @@ func runWorker(cmd *cobra.Command, args []string) error {
 
 	runSvc := runservice.NewService(store, mgr, wsManager)
 	runSvc.SetCredentialStore(secret.MustLoad(resolveCredentialsPath(credentialsFile)))
+	runSvc.SetStepRegistry(registry)
+	if err := pruneLocalStorage(context.Background(), wsManager, runSvc.ArtifactManager()); err != nil {
+		slog.Warn("initial local storage cleanup failed", "error", err)
+	}
 	handler := api.NewHandler(store)
 	handler.SetRunService(runSvc)
 	handler.SetDockerHealthChecker(mgr)
 
 	server := &http.Server{
 		Addr:              listenAddr,
-		Handler:           api.NewRouter(handler),
+		Handler:           api.NewRouterWithOptions(handler, api.RouterOptions{BearerToken: resolvedAPIToken}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -118,6 +150,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// 等待退出信号
 	ctx, cancel := signalContext()
 	defer cancel()
+	go runStoragePruner(ctx, wsManager, runSvc.ArtifactManager())
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -148,6 +181,71 @@ func runWorker(cmd *cobra.Command, args []string) error {
 
 	slog.Info("worker stopped")
 	return nil
+}
+
+func runStoragePruner(ctx context.Context, workspace *container.WorkspaceManager, artifacts *artifact.Manager) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := pruneLocalStorage(ctx, workspace, artifacts); err != nil {
+				slog.Warn("scheduled local storage cleanup failed", "error", err)
+			}
+		}
+	}
+}
+
+func pruneLocalStorage(ctx context.Context, workspace *container.WorkspaceManager, artifacts *artifact.Manager) error {
+	now := time.Now()
+	workspaces, err := workspace.PruneWorkspacesOlderThan(now.Add(-workspaceRetention))
+	if err != nil {
+		return fmt.Errorf("prune workspaces: %w", err)
+	}
+	caches, err := workspace.PruneCachesOlderThan(now.Add(-cacheRetention))
+	if err != nil {
+		return fmt.Errorf("prune caches: %w", err)
+	}
+	artifactCount, err := artifacts.PruneOlderThan(ctx, now.Add(-artifactRetention))
+	if err != nil {
+		return fmt.Errorf("prune artifacts: %w", err)
+	}
+	if workspaces+caches+artifactCount > 0 {
+		slog.Info("local storage cleanup completed", "workspaces", workspaces, "caches", caches, "artifacts", artifactCount)
+	}
+	return nil
+}
+
+func resolveAPIToken(flagToken, tokenFile string) (string, error) {
+	if flagToken != "" && tokenFile != "" {
+		return "", fmt.Errorf("only one of --api-token and --api-token-file may be set")
+	}
+	if tokenFile == "" {
+		return flagToken, nil
+	}
+	data, err := os.ReadFile(tokenFile)
+	if err != nil {
+		return "", fmt.Errorf("read api token file: %w", err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("api token file is empty")
+	}
+	return token, nil
+}
+
+func isLoopbackListen(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func resolveCredentialsPath(flagPath string) string {

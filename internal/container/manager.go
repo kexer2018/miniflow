@@ -18,8 +18,30 @@ type Config struct {
 	WorkDir        string          // 容器内工作目录
 	Workspace      *WorkspaceMount // 共享工作空间挂载
 	CacheMount     []CacheMount    // 缓存卷挂载
+	ReadOnlyMount  []ReadOnlyMount // 平台提供的只读文件挂载
 	NetworkEnabled bool            // 是否启用网络
+	Hardened       bool            // Apply the restricted policy used for user Step containers.
 	LogCallback    LogCallback     // 可选：实时接收 stdout/stderr 日志行
+}
+
+// ResourceLimits are the default limits applied to each container. They keep a
+// single local Run from exhausting the machine that hosts the worker.
+type ResourceLimits struct {
+	MemoryBytes int64
+	NanoCPUs    int64
+	PidsLimit   int64
+}
+
+var DefaultResourceLimits = ResourceLimits{
+	MemoryBytes: 2 * 1024 * 1024 * 1024,
+	NanoCPUs:    2_000_000_000,
+	PidsLimit:   256,
+}
+
+// ReadOnlyMount describes a runner-controlled read-only bind mount.
+type ReadOnlyMount struct {
+	Source string
+	Target string
 }
 
 // WorkspaceMount 描述共享工作空间的挂载方式。

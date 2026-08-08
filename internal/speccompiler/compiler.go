@@ -20,6 +20,14 @@ import (
 // BuildSteps compiles the public pipeline spec into internal executable steps.
 // It is the shared CLI/API path so PipelineSpec stays the stable protocol.
 func BuildSteps(spec *pipelinespec.PipelineSpec, credStore *secret.CredentialStore) ([]internalpipeline.Step, error) {
+	return BuildStepsWithRegistry(spec, credStore, stepregistry.Default())
+}
+
+// BuildStepsWithRegistry compiles a spec against an immutable worker registry.
+func BuildStepsWithRegistry(spec *pipelinespec.PipelineSpec, credStore *secret.CredentialStore, registry *stepregistry.Registry) ([]internalpipeline.Step, error) {
+	if registry == nil {
+		registry = stepregistry.Default()
+	}
 	pipelineEnv, err := PipelineEnv(spec)
 	if err != nil {
 		return nil, err
@@ -27,12 +35,16 @@ func BuildSteps(spec *pipelinespec.PipelineSpec, credStore *secret.CredentialSto
 
 	steps := make([]internalpipeline.Step, len(spec.Steps))
 	for i, s := range spec.Steps {
-		step, err := stepregistry.Compile(s)
+		step, err := registry.Compile(s)
 		if err != nil {
 			return nil, err
 		}
 
-		env := make([]string, len(pipelineEnv), len(pipelineEnv)+len(s.Env)+len(s.Secrets))
+		extensionEnv := []string(nil)
+		if step.Extension != nil {
+			extensionEnv = step.Env
+		}
+		env := make([]string, len(pipelineEnv), len(pipelineEnv)+len(s.Env)+len(s.Secrets)+len(extensionEnv))
 		copy(env, pipelineEnv)
 		env = append(env, s.Env...)
 
@@ -43,9 +55,13 @@ func BuildSteps(spec *pipelinespec.PipelineSpec, credStore *secret.CredentialSto
 				slog.Warn("secret not found, skipping", "secret", secName, "step", s.Name)
 			}
 		}
+		// Registry-provided extension inputs come last so a PipelineSpec cannot
+		// override the reserved MINIFLOW_INPUT_* values.
+		env = append(env, extensionEnv...)
 
 		step.Env = env
 		step.Timeout = time.Duration(s.Timeout) * time.Second
+		step.NetworkEnabled = s.Network != "none"
 		if s.Cache != nil {
 			step.Cache = &internalpipeline.Cache{
 				Path: s.Cache.Path,

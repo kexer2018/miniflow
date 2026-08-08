@@ -116,6 +116,33 @@ func (s *SQLiteStore) ListArtifacts(ctx context.Context, runID string) ([]Artifa
 	return artifacts, rows.Err()
 }
 
+func (s *SQLiteStore) ListArtifactsBefore(ctx context.Context, before time.Time) ([]ArtifactRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT run_id, name, path, size, created_at FROM artifacts WHERE created_at < ? ORDER BY created_at`, before.Unix())
+	if err != nil {
+		return nil, fmt.Errorf("list expired artifacts: %w", err)
+	}
+	defer rows.Close()
+
+	var artifacts []ArtifactRecord
+	for rows.Next() {
+		var artifact ArtifactRecord
+		var createdAt int64
+		if err := rows.Scan(&artifact.RunID, &artifact.Name, &artifact.Path, &artifact.Size, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan expired artifact: %w", err)
+		}
+		artifact.CreatedAt = time.Unix(createdAt, 0)
+		artifacts = append(artifacts, artifact)
+	}
+	return artifacts, rows.Err()
+}
+
+func (s *SQLiteStore) DeleteArtifact(ctx context.Context, runID, name string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM artifacts WHERE run_id = ? AND name = ?`, runID, name); err != nil {
+		return fmt.Errorf("delete artifact: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteStore) GetPipelineResult(ctx context.Context, id string) (*pipeline.PipelineResult, error) {
 	query := `SELECT id, name, status, total_steps, step_results_json, started_at, finished_at, duration_ms
 		FROM pipeline_results WHERE id = ?`

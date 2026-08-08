@@ -112,10 +112,20 @@ func (m *DockerManager) RunContainer(ctx context.Context, cfg Config) (Result, e
 		cmd = []string{"/bin/sh", "-c", "echo no commands specified"}
 	}
 
+	pidsLimit := DefaultResourceLimits.PidsLimit
 	hostCfg := &container.HostConfig{
 		Mounts:      buildMounts(cfg),
 		AutoRemove:  false, // 手动清理以确保日志可读
 		NetworkMode: networkMode(cfg.NetworkEnabled),
+		Resources: container.Resources{
+			Memory:    DefaultResourceLimits.MemoryBytes,
+			NanoCPUs:  DefaultResourceLimits.NanoCPUs,
+			PidsLimit: &pidsLimit,
+		},
+	}
+	if cfg.Hardened {
+		hostCfg.CapDrop = []string{"ALL"}
+		hostCfg.SecurityOpt = []string{"no-new-privileges:true"}
 	}
 
 	containerCfg := &container.Config{
@@ -354,6 +364,14 @@ func buildMounts(cfg Config) []mount.Mount {
 			Source:   cm.Source,
 			Target:   cm.Target,
 			ReadOnly: cm.ReadOnly,
+		})
+	}
+	for _, mountConfig := range cfg.ReadOnlyMount {
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   mountConfig.Source,
+			Target:   mountConfig.Target,
+			ReadOnly: true,
 		})
 	}
 

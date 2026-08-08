@@ -19,6 +19,7 @@ import (
 	"github.com/kexer2018/miniflow/internal/source"
 	"github.com/kexer2018/miniflow/internal/speccompiler"
 	"github.com/kexer2018/miniflow/internal/stepops"
+	"github.com/kexer2018/miniflow/internal/stepregistry"
 	pipelinespec "github.com/kexer2018/miniflow/pkg/pipeline"
 )
 
@@ -28,6 +29,7 @@ type Service struct {
 	wsManager *container.WorkspaceManager
 	credStore *secret.CredentialStore
 	artifacts *artifact.Manager
+	registry  *stepregistry.Registry
 
 	mu          sync.RWMutex
 	runs        map[string]*Run
@@ -51,12 +53,28 @@ func NewService(store db.Store, mgr container.Manager, ws *container.WorkspaceMa
 		wsManager:   ws,
 		credStore:   secret.NewCredentialStore(),
 		artifacts:   artifact.NewManager(filepath.Join(filepath.Dir(ws.BaseDir), "artifacts"), artifactStore),
+		registry:    stepregistry.Default(),
 		runs:        make(map[string]*Run),
 		steps:       make(map[string][]StepRun),
 		history:     make(map[string][]Event),
 		subscribers: make(map[string]map[chan Event]struct{}),
 		cancels:     make(map[string]context.CancelFunc),
 	}
+}
+
+func (s *Service) SetStepRegistry(registry *stepregistry.Registry) {
+	if registry != nil {
+		s.registry = registry
+	}
+}
+
+func (s *Service) StepRegistry() *stepregistry.Registry { return s.registry }
+
+func (s *Service) Validate(spec *pipelinespec.PipelineSpec) error {
+	if err := spec.Validate(); err != nil {
+		return err
+	}
+	return s.registry.ValidatePipeline(spec)
 }
 
 // ArtifactManager exposes the local artifact reader used by the API layer.
@@ -71,7 +89,7 @@ func (s *Service) SetCredentialStore(store *secret.CredentialStore) {
 }
 
 func (s *Service) Start(ctx context.Context, spec pipelinespec.PipelineSpec) (*Run, error) {
-	if err := spec.Validate(); err != nil {
+	if err := s.Validate(&spec); err != nil {
 		return nil, err
 	}
 	if s.mgr == nil {
@@ -186,7 +204,7 @@ func (s *Service) execute(ctx context.Context, runID string, spec pipelinespec.P
 	s.updateRun(runID, StatusRunning, "")
 	s.publish(Event{Type: EventRunStatus, RunID: runID, Status: StatusRunning, Time: time.Now()})
 
-	steps, err := speccompiler.BuildSteps(&spec, s.credStore)
+	steps, err := speccompiler.BuildStepsWithRegistry(&spec, s.credStore, s.registry)
 	if err != nil {
 		s.finishRun(runID, StatusFailed, err.Error(), nil)
 		return

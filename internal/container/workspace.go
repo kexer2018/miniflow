@@ -2,10 +2,13 @@ package container
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // ─── 常量 ──────────────────────────────────────────────────
@@ -102,7 +105,7 @@ func (wm *WorkspaceManager) EnsureWorkspacePermissions(ctx context.Context, mgr 
 
 // EnsureCacheDir 确保指定缓存目录存在并返回其路径。
 func (wm *WorkspaceManager) EnsureCacheDir(cacheKey string) (string, error) {
-	cachePath := filepath.Join(wm.BaseDir, ".cache", cacheKey)
+	cachePath := wm.CachePath(cacheKey)
 
 	if err := os.MkdirAll(cachePath, 0755); err != nil {
 		return "", fmt.Errorf("create cache dir: %w", err)
@@ -113,5 +116,46 @@ func (wm *WorkspaceManager) EnsureCacheDir(cacheKey string) (string, error) {
 
 // CachePath 返回指定缓存键的宿主机路径。
 func (wm *WorkspaceManager) CachePath(cacheKey string) string {
-	return filepath.Join(wm.BaseDir, ".cache", cacheKey)
+	digest := sha256.Sum256([]byte(cacheKey))
+	return filepath.Join(wm.BaseDir, ".cache", hex.EncodeToString(digest[:]))
+}
+
+// PruneWorkspacesOlderThan removes completed Run workspaces older than before.
+// The .cache directory is deliberately excluded because it has a distinct
+// cross-Run lifecycle.
+func (wm *WorkspaceManager) PruneWorkspacesOlderThan(before time.Time) (int, error) {
+	return pruneDirectories(wm.BaseDir, before, func(name string) bool { return name != ".cache" })
+}
+
+// PruneCachesOlderThan removes inactive cache entries based on directory mtime.
+func (wm *WorkspaceManager) PruneCachesOlderThan(before time.Time) (int, error) {
+	return pruneDirectories(filepath.Join(wm.BaseDir, ".cache"), before, func(string) bool { return true })
+}
+
+func pruneDirectories(root string, before time.Time, include func(string) bool) (int, error) {
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, entry := range entries {
+		if !entry.IsDir() || !include(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return removed, err
+		}
+		if info.ModTime().Before(before) {
+			if err := os.RemoveAll(path); err != nil {
+				return removed, err
+			}
+			removed++
+		}
+	}
+	return removed, nil
 }

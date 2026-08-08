@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/kexer2018/miniflow/internal/db"
 )
@@ -32,6 +33,19 @@ func (s *memoryStore) ListArtifacts(_ context.Context, runID string) ([]db.Artif
 		}
 	}
 	return records, nil
+}
+func (s *memoryStore) ListArtifactsBefore(_ context.Context, before time.Time) ([]db.ArtifactRecord, error) {
+	var records []db.ArtifactRecord
+	for _, record := range s.records {
+		if record.CreatedAt.Before(before) {
+			records = append(records, record)
+		}
+	}
+	return records, nil
+}
+func (s *memoryStore) DeleteArtifact(_ context.Context, runID, name string) error {
+	delete(s.records, s.key(runID, name))
+	return nil
 }
 
 func TestSaveAndRestore(t *testing.T) {
@@ -63,5 +77,25 @@ func TestSaveAndRestore(t *testing.T) {
 	}
 	if string(data) != "release" {
 		t.Fatalf("got %q, want release", data)
+	}
+}
+
+func TestPruneOlderThanRemovesArchiveAndMetadata(t *testing.T) {
+	store := &memoryStore{records: make(map[string]db.ArtifactRecord)}
+	manager := NewManager(filepath.Join(t.TempDir(), "artifacts"), store)
+	archive := filepath.Join(manager.Root, "old-run", "build.tar.gz")
+	if err := os.MkdirAll(filepath.Dir(archive), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archive, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store.records[store.key("old-run", "build")] = db.ArtifactRecord{RunID: "old-run", Name: "build", Path: archive, CreatedAt: time.Now().Add(-48 * time.Hour)}
+	removed, err := manager.PruneOlderThan(context.Background(), time.Now().Add(-24*time.Hour))
+	if err != nil || removed != 1 {
+		t.Fatalf("unexpected prune result %d, %v", removed, err)
+	}
+	if _, err := os.Stat(archive); !os.IsNotExist(err) {
+		t.Fatalf("expected archive to be removed, got %v", err)
 	}
 }

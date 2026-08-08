@@ -100,6 +100,35 @@ func TestRouterListsStepTypes(t *testing.T) {
 	}
 }
 
+func TestRouterRequiresBearerTokenWhenConfigured(t *testing.T) {
+	router := NewRouterWithOptions(NewHandler(nil), RouterOptions{BearerToken: "test-token"})
+
+	unauthorized := httptest.NewRequest(http.MethodGet, "/api/v1/step-types", nil)
+	unauthorizedRec := httptest.NewRecorder()
+	router.ServeHTTP(unauthorizedRec, unauthorized)
+	if unauthorizedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", unauthorizedRec.Code)
+	}
+
+	authorized := httptest.NewRequest(http.MethodGet, "/api/v1/step-types", nil)
+	authorized.Header.Set("Authorization", "Bearer test-token")
+	authorizedRec := httptest.NewRecorder()
+	router.ServeHTTP(authorizedRec, authorized)
+	if authorizedRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", authorizedRec.Code, authorizedRec.Body.String())
+	}
+}
+
+func TestRouterLimitsRequestBody(t *testing.T) {
+	router := NewRouterWithOptions(NewHandler(nil), RouterOptions{MaxRequestBodyBytes: 16})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pipelines/validate", strings.NewReader(`{"spec":{"name":"this is too large"}}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected bounded body to be rejected, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHealthCheckIncludesDockerStatus(t *testing.T) {
 	handler := NewHandler(nil)
 	handler.SetDockerHealthChecker(fakeDockerHealth{})

@@ -21,16 +21,24 @@ type Pipeline struct {
 
 // Step 表示流水线中的一个执行步骤。
 type Step struct {
-	Name       string        `json:"name"`
-	Image      string        `json:"image"`
-	Commands   []string      `json:"commands"`
-	DependsOn  []string      `json:"depends_on,omitempty"`
-	Cache      *Cache        `json:"cache,omitempty"`
-	Env        []string      `json:"env,omitempty"`
-	Entrypoint []string      `json:"entrypoint,omitempty"`
-	Timeout    time.Duration `json:"-"` // 步骤超时，0 表示不限制（从 spec 的秒数转换）
-	SSHAgent   bool          `json:"-"` // 是否转发宿主 SSH Agent 到容器
-	Operation  *Operation    `json:"-"` // 由受控主机操作层执行的基础 Step
+	Name           string        `json:"name"`
+	Image          string        `json:"image"`
+	Commands       []string      `json:"commands"`
+	DependsOn      []string      `json:"depends_on,omitempty"`
+	Cache          *Cache        `json:"cache,omitempty"`
+	Env            []string      `json:"env,omitempty"`
+	Entrypoint     []string      `json:"entrypoint,omitempty"`
+	Timeout        time.Duration `json:"-"` // 步骤超时，0 表示不限制（从 spec 的秒数转换）
+	SSHAgent       bool          `json:"-"` // 是否转发宿主 SSH Agent 到容器
+	NetworkEnabled bool          `json:"-"` // Whether the user Step may access the network.
+	Operation      *Operation    `json:"-"` // 由受控主机操作层执行的基础 Step
+	Extension      *Extension    `json:"-"` // 由受信任 Bundle 提供的脚本 Step
+}
+
+// Extension is a runner-controlled, read-only script bundle mount.
+type Extension struct {
+	Source string
+	Target string
 }
 
 // Operation describes a non-user-script platform primitive executed by the

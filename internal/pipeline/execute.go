@@ -351,7 +351,8 @@ func (e *Executor) executeStep(ctx context.Context, runID string, step Step, wsP
 		Env:            env,
 		User:           container.DefaultUID,
 		WorkDir:        workDir,
-		NetworkEnabled: true,
+		NetworkEnabled: step.NetworkEnabled,
+		Hardened:       true,
 		Workspace: &container.WorkspaceMount{
 			Source: wsPath,
 			Target: workDir,
@@ -369,6 +370,12 @@ func (e *Executor) executeStep(ctx context.Context, runID string, step Step, wsP
 		cfg.CacheMount = append(cfg.CacheMount, container.CacheMount{
 			Source: cachePath,
 			Target: step.Cache.Path,
+		})
+	}
+	if step.Extension != nil {
+		cfg.ReadOnlyMount = append(cfg.ReadOnlyMount, container.ReadOnlyMount{
+			Source: step.Extension.Source,
+			Target: step.Extension.Target,
 		})
 	}
 

@@ -42,6 +42,7 @@ type StepSpec struct {
 	Timeout    int            `json:"timeout,omitempty"`    // 步骤超时时间（秒），0 表示不限制
 	Entrypoint []string       `json:"entrypoint,omitempty"` // 覆盖容器 entrypoint
 	SSHAgent   bool           `json:"ssh_agent,omitempty"`  // 映射宿主 ~/.ssh 到容器
+	Network    string         `json:"network,omitempty"`    // "default" (default) or "none"
 }
 
 // Cache 定义缓存挂载策略。
@@ -107,7 +108,14 @@ func (s *PipelineSpec) Validate() error {
 				return ErrStepMissingWithField(step.Name, "name")
 			}
 		default:
-			return ErrUnsupportedStepType(step.Name, step.Type)
+			// External Step types are validated by the worker's trusted Registry.
+			// Keep this public model free from internal extension loading details.
+			if step.Type == "" {
+				return ErrUnsupportedStepType(step.Name, step.Type)
+			}
+		}
+		if step.Network != "" && step.Network != "default" && step.Network != "none" {
+			return fmt.Errorf("step %q: network must be default or none", step.Name)
 		}
 	}
 

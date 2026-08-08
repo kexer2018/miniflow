@@ -14,6 +14,8 @@ type ArtifactStore interface {
 	SaveArtifact(ctx context.Context, artifact ArtifactRecord) error
 	GetArtifact(ctx context.Context, runID, name string) (*ArtifactRecord, error)
 	ListArtifacts(ctx context.Context, runID string) ([]ArtifactRecord, error)
+	ListArtifactsBefore(ctx context.Context, before time.Time) ([]ArtifactRecord, error)
+	DeleteArtifact(ctx context.Context, runID, name string) error
 }
 
 // ArtifactRecord indexes an archive stored on the local filesystem.

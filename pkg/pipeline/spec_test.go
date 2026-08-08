@@ -118,3 +118,23 @@ func TestPipelineSpecValidateTypedScriptRunRequiresScript(t *testing.T) {
 		t.Fatal("expected script.run without with.script to fail validation")
 	}
 }
+
+func TestPipelineSpecValidateNetworkPolicy(t *testing.T) {
+	spec := PipelineSpec{
+		Name: "network-policy",
+		Steps: []StepSpec{{
+			Name:    "no-network",
+			Type:    "script.run",
+			Image:   "alpine:latest",
+			With:    map[string]any{"script": "echo ok"},
+			Network: "none",
+		}},
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("expected network=none to be valid, got %v", err)
+	}
+	spec.Steps[0].Network = "host"
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected unsupported network policy to fail validation")
+	}
+}

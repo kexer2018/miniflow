@@ -2,10 +2,19 @@
 package api
 
 import (
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"time"
 )
+
+const defaultMaxRequestBodyBytes int64 = 1 << 20
+
+// RouterOptions configures the deployment boundary around the local API.
+type RouterOptions struct {
+	BearerToken         string
+	MaxRequestBodyBytes int64
+}
 
 // ─── 路由 ─────────────────────────────────────────────────
 
@@ -17,6 +26,12 @@ type Router struct {
 
 // NewRouter 创建 API 路由器。
 func NewRouter(handler *Handler) *Router {
+	return NewRouterWithOptions(handler, RouterOptions{})
+}
+
+// NewRouterWithOptions builds a router with optional bearer authentication and
+// a bounded request body. The zero value preserves existing local callers.
+func NewRouterWithOptions(handler *Handler, options RouterOptions) *Router {
 	r := &Router{mux: http.NewServeMux()}
 
 	// ─── 健康检查 ──────────────────────────────────
@@ -44,7 +59,7 @@ func NewRouter(handler *Handler) *Router {
 	// ─── AI 智能诊断 ───────────────────────────────
 	r.mux.HandleFunc("POST /api/v1/diagnose", handler.Diagnose)
 
-	return r
+	return r.withSecurity(options)
 }
 
 // ServeHTTP 实现 http.Handler 接口。
@@ -60,6 +75,31 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		"duration_ms", time.Since(startedAt).Milliseconds(),
 		"remote_addr", req.RemoteAddr,
 	)
+}
+
+func (r *Router) withSecurity(options RouterOptions) *Router {
+	maxBytes := options.MaxRequestBodyBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxRequestBodyBytes
+	}
+	inner := r.mux
+	r.mux = http.NewServeMux()
+	r.mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if options.BearerToken != "" {
+			const prefix = "Bearer "
+			header := req.Header.Get("Authorization")
+			if len(header) < len(prefix) || header[:len(prefix)] != prefix || subtle.ConstantTimeCompare([]byte(header[len(prefix):]), []byte(options.BearerToken)) != 1 {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				writeError(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+		}
+		if req.Body != nil {
+			req.Body = http.MaxBytesReader(w, req.Body, maxBytes)
+		}
+		inner.ServeHTTP(w, req)
+	}))
+	return r
 }
 
 // responseRecorder captures the status code while preserving SSE flushing.

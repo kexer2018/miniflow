@@ -58,6 +58,12 @@ func TestBuildMounts_Cache(t *testing.T) {
 	}
 }
 
+func TestDefaultResourceLimitsAreConservative(t *testing.T) {
+	if DefaultResourceLimits.MemoryBytes <= 0 || DefaultResourceLimits.NanoCPUs <= 0 || DefaultResourceLimits.PidsLimit <= 0 {
+		t.Fatalf("expected positive default resource limits, got %#v", DefaultResourceLimits)
+	}
+}
+
 func TestCallbackWriterEmitsCompleteLines(t *testing.T) {
 	var lines []string
 	var out bytes.Buffer

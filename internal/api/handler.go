@@ -93,6 +93,10 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 // ─── Step Type API ────────────────────────────────────────
 
 func (h *Handler) ListStepTypes(w http.ResponseWriter, r *http.Request) {
+	if h.runSvc != nil {
+		writeJSON(w, http.StatusOK, h.runSvc.StepRegistry().List())
+		return
+	}
 	writeJSON(w, http.StatusOK, stepregistry.Builtins())
 }
 
@@ -110,7 +114,7 @@ func (h *Handler) ValidatePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := req.Spec.Validate(); err != nil {
+	if err := h.validateSpec(&req.Spec); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"valid": false,
 			"error": err.Error(),
@@ -142,7 +146,7 @@ func (h *Handler) StartRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := req.Spec.Validate(); err != nil {
+	if err := h.validateSpec(&req.Spec); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid pipeline spec: "+err.Error())
 		return
 	}
@@ -154,6 +158,13 @@ func (h *Handler) StartRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusAccepted, run)
+}
+
+func (h *Handler) validateSpec(spec *pipelinespec.PipelineSpec) error {
+	if h.runSvc != nil {
+		return h.runSvc.Validate(spec)
+	}
+	return spec.Validate()
 }
 
 func (h *Handler) GetRun(w http.ResponseWriter, r *http.Request) {

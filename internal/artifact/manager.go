@@ -109,6 +109,31 @@ func (m *Manager) Get(ctx context.Context, runID, name string) (*db.ArtifactReco
 	return m.store.GetArtifact(ctx, runID, name)
 }
 
+// PruneOlderThan removes expired local archives and their metadata together.
+// It is deliberately local-only: distributed artifact retention is not part of
+// the single-node execution model.
+func (m *Manager) PruneOlderThan(ctx context.Context, before time.Time) (int, error) {
+	if m.store == nil {
+		return 0, fmt.Errorf("artifact metadata store is not configured")
+	}
+	records, err := m.store.ListArtifactsBefore(ctx, before)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, record := range records {
+		if err := os.Remove(record.Path); err != nil && !os.IsNotExist(err) {
+			return removed, fmt.Errorf("remove artifact %q: %w", record.Name, err)
+		}
+		if err := m.store.DeleteArtifact(ctx, record.RunID, record.Name); err != nil {
+			return removed, err
+		}
+		_ = os.Remove(filepath.Dir(record.Path))
+		removed++
+	}
+	return removed, nil
+}
+
 func writeArchive(output io.Writer, workspace string, matches []string) error {
 	gz := gzip.NewWriter(output)
 	defer gz.Close()

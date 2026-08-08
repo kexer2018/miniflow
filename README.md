@@ -9,6 +9,8 @@
 
 核心产品原则见 [docs/product-principles.md](docs/product-principles.md)。后续开发应优先满足这些原则：Docker 主路径、单机优先、脚本优先、图形化只提供基础 Step、PipelineSpec 作为稳定协议。
 
+第三方业务脚本的扩展约定与未来 manifest schema 见 [docs/custom-step-extension.md](docs/custom-step-extension.md)。
+
 ---
 
 ## 特性

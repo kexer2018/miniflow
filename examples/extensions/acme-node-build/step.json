@@ -1,0 +1,31 @@
+{
+  "apiVersion": "miniflow.dev/v1",
+  "kind": "ScriptStepExtension",
+  "metadata": {
+    "id": "com.acme.node.build",
+    "version": "1.0.0",
+    "name": "Acme Node Build",
+    "description": "Build a Node.js project into dist/."
+  },
+  "spec": {
+    "runtime": {
+      "image": "node:22-alpine",
+      "script": "run.sh"
+    },
+    "inputs": {
+      "type": "object",
+      "required": ["build_mode"],
+      "properties": {
+        "build_mode": {
+          "type": "string",
+          "enum": ["development", "production"],
+          "default": "production"
+        }
+      },
+      "additionalProperties": false
+    },
+    "outputs": [
+      { "name": "dist", "path": "dist" }
+    ]
+  }
+}
