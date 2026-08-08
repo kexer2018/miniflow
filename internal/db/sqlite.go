@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	logutil "github.com/kexer2018/miniflow/internal/log"
 	"github.com/kexer2018/miniflow/internal/pipeline"
 
 	_ "modernc.org/sqlite"
@@ -46,11 +47,15 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 // ─── 实现 Store 接口 ─────────────────────────────────────
 
 func (s *SQLiteStore) SavePipelineResult(ctx context.Context, result *pipeline.PipelineResult) error {
+	if result == nil {
+		return fmt.Errorf("pipeline result is required")
+	}
 	query := `INSERT INTO pipeline_results
 		(id, name, status, total_steps, step_results_json, started_at, finished_at, duration_ms, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	stepResultsJSON, err := json.Marshal(result.StepResults)
+	stepResults := persistedStepResults(result.StepResults)
+	stepResultsJSON, err := json.Marshal(stepResults)
 	if err != nil {
 		return fmt.Errorf("marshal step results: %w", err)
 	}
@@ -72,6 +77,21 @@ func (s *SQLiteStore) SavePipelineResult(ctx context.Context, result *pipeline.P
 	}
 
 	return nil
+}
+
+// persistedStepResults deliberately removes raw container output before it
+// crosses the in-memory execution boundary. Secret redaction must not depend
+// on individual callers remembering to sanitize a result first.
+func persistedStepResults(results []pipeline.StepResult) []pipeline.StepResult {
+	persisted := make([]pipeline.StepResult, len(results))
+	copy(persisted, results)
+	for i := range persisted {
+		if persisted[i].Sanitized == "" && persisted[i].RawLog != "" {
+			persisted[i].Sanitized = logutil.SanitizeString(persisted[i].RawLog)
+		}
+		persisted[i].RawLog = ""
+	}
+	return persisted
 }
 
 func (s *SQLiteStore) SaveArtifact(ctx context.Context, artifact ArtifactRecord) error {

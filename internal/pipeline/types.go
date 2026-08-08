@@ -73,7 +73,7 @@ type StepResult struct {
 	Name       string `json:"name"`
 	Status     Status `json:"status"`        // success / failed / skipped
 	ExitCode   int    `json:"exit_code"`     // 容器退出码，0 表示成功
-	RawLog     string `json:"raw_log"`       // 原始日志（仅用于持久化/调试）
+	RawLog     string `json:"-"`             // 原始日志仅在当前进程执行期间使用，绝不对外或持久化。
 	Sanitized  string `json:"sanitized_log"` // 脱敏后日志（用于 LLM 分析）
 	DurationMs int64  `json:"duration_ms"`
 	Error      string `json:"error,omitempty"` // 非容器退出导致的错误（如创建容器失败）

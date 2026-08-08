@@ -121,6 +121,27 @@ func TestPipelineResult_SaveAndGet(t *testing.T) {
 	}
 }
 
+func TestPipelineResult_DoesNotPersistRawLog(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+	result := testPipelineResult("redacted-log")
+	result.StepResults[0].RawLog = "token=ghp_abcdefghijklmnopqrstuvwxyz1234567890AB"
+
+	if err := store.SavePipelineResult(context.Background(), result); err != nil {
+		t.Fatalf("SavePipelineResult failed: %v", err)
+	}
+	got, err := store.GetPipelineResult(context.Background(), result.PipelineID)
+	if err != nil {
+		t.Fatalf("GetPipelineResult failed: %v", err)
+	}
+	if got.StepResults[0].RawLog != "" {
+		t.Fatalf("raw log must not be persisted, got %q", got.StepResults[0].RawLog)
+	}
+	if got.StepResults[0].Sanitized == result.StepResults[0].RawLog || got.StepResults[0].Sanitized == "" {
+		t.Fatalf("expected a non-empty redacted log, got %q", got.StepResults[0].Sanitized)
+	}
+}
+
 func TestPipelineResult_GetNotFound(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
