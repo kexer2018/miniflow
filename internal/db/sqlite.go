@@ -163,6 +163,140 @@ func (s *SQLiteStore) DeleteArtifact(ctx context.Context, runID, name string) er
 	return nil
 }
 
+func (s *SQLiteStore) CreateRun(ctx context.Context, run RunRecord, steps []StepRunRecord) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin create run: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO runs (id, name, status, spec_json, started_at, finished_at, duration_ms, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, run.ID, run.Name, run.Status, run.SpecJSON, run.StartedAt.UnixMilli(), run.FinishedAt.UnixMilli(), run.DurationMs, run.Error)
+	if err != nil {
+		return fmt.Errorf("insert run: %w", err)
+	}
+	for position, step := range steps {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO run_steps (run_id, position, name, status, exit_code, duration_ms, error) VALUES (?, ?, ?, ?, ?, ?, ?)`, run.ID, position, step.Name, step.Status, step.ExitCode, step.DurationMs, step.Error); err != nil {
+			return fmt.Errorf("insert run step: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit create run: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) UpdateRun(ctx context.Context, run RunRecord) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE runs SET status=?, finished_at=?, duration_ms=?, error=? WHERE id=?`, run.Status, run.FinishedAt.UnixMilli(), run.DurationMs, run.Error, run.ID)
+	return err
+}
+
+func (s *SQLiteStore) UpdateStepRun(ctx context.Context, runID string, step StepRunRecord) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE run_steps SET status=?, exit_code=?, duration_ms=?, error=? WHERE run_id=? AND name=?`, step.Status, step.ExitCode, step.DurationMs, step.Error, runID, step.Name)
+	return err
+}
+
+func (s *SQLiteStore) GetRun(ctx context.Context, id string) (*RunRecord, error) {
+	r := &RunRecord{}
+	var startedAt, finishedAt int64
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, status, spec_json, started_at, finished_at, duration_ms, error FROM runs WHERE id=?`, id).Scan(&r.ID, &r.Name, &r.Status, &r.SpecJSON, &startedAt, &finishedAt, &r.DurationMs, &r.Error)
+	if err != nil {
+		return nil, err
+	}
+	r.StartedAt, r.FinishedAt = time.UnixMilli(startedAt), time.UnixMilli(finishedAt)
+	return r, nil
+}
+
+func (s *SQLiteStore) ListRuns(ctx context.Context, limit, offset int) ([]RunRecord, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, status, spec_json, started_at, finished_at, duration_ms, error FROM runs ORDER BY started_at DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []RunRecord
+	for rows.Next() {
+		var r RunRecord
+		var startedAt, finishedAt int64
+		if err := rows.Scan(&r.ID, &r.Name, &r.Status, &r.SpecJSON, &startedAt, &finishedAt, &r.DurationMs, &r.Error); err != nil {
+			return nil, err
+		}
+		r.StartedAt, r.FinishedAt = time.UnixMilli(startedAt), time.UnixMilli(finishedAt)
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+func (s *SQLiteStore) SavePipelineDefinition(ctx context.Context, definition PipelineDefinitionRecord) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO pipeline_definitions (name, spec_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET spec_json=excluded.spec_json, updated_at=excluded.updated_at`, definition.Name, definition.SpecJSON, definition.UpdatedAt.UnixMilli())
+	return err
+}
+
+func (s *SQLiteStore) ListPipelineDefinitions(ctx context.Context, limit, offset int) ([]PipelineDefinitionRecord, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT name, spec_json, updated_at FROM pipeline_definitions ORDER BY updated_at DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []PipelineDefinitionRecord
+	for rows.Next() {
+		var r PipelineDefinitionRecord
+		var updatedAt int64
+		if err := rows.Scan(&r.Name, &r.SpecJSON, &updatedAt); err != nil {
+			return nil, err
+		}
+		r.UpdatedAt = time.UnixMilli(updatedAt)
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+func (s *SQLiteStore) ListStepRuns(ctx context.Context, runID string) ([]StepRunRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name, status, exit_code, duration_ms, error FROM run_steps WHERE run_id=? ORDER BY position`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []StepRunRecord
+	for rows.Next() {
+		var step StepRunRecord
+		if err := rows.Scan(&step.Name, &step.Status, &step.ExitCode, &step.DurationMs, &step.Error); err != nil {
+			return nil, err
+		}
+		result = append(result, step)
+	}
+	return result, rows.Err()
+}
+
+func (s *SQLiteStore) MarkActiveRunsInterrupted(ctx context.Context, message string, finishedAt time.Time) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE run_steps SET status='interrupted', error=? WHERE status IN ('queued', 'running') AND run_id IN (SELECT id FROM runs WHERE status IN ('queued', 'running'))`, message); err != nil {
+		return 0, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE runs SET status='interrupted', error=?, finished_at=?, duration_ms=CASE WHEN started_at > 0 THEN ? - started_at ELSE 0 END WHERE status IN ('queued', 'running')`, message, finishedAt.UnixMilli(), finishedAt.UnixMilli())
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	count, err := result.RowsAffected()
+	return int(count), err
+}
+
 func (s *SQLiteStore) GetPipelineResult(ctx context.Context, id string) (*pipeline.PipelineResult, error) {
 	query := `SELECT id, name, status, total_steps, step_results_json, started_at, finished_at, duration_ms
 		FROM pipeline_results WHERE id = ?`
@@ -407,6 +541,19 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			size INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (run_id, name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS runs (
+			id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL,
+			spec_json TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER NOT NULL DEFAULT 0,
+			duration_ms INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS run_steps (
+			run_id TEXT NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL,
+			exit_code INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (run_id, name), FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS pipeline_definitions (
+			name TEXT PRIMARY KEY, spec_json TEXT NOT NULL, updated_at INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS exec_contexts (
 			pipeline_id TEXT PRIMARY KEY,

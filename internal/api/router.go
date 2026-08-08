@@ -39,10 +39,12 @@ func NewRouterWithOptions(handler *Handler, options RouterOptions) *Router {
 
 	// ─── Step 类型发现 / 校验 ───────────────────────
 	r.mux.HandleFunc("GET /api/v1/step-types", handler.ListStepTypes)
+	r.mux.HandleFunc("GET /api/v1/pipeline-definitions", handler.ListPipelineDefinitions)
 	r.mux.HandleFunc("POST /api/v1/pipelines/validate", handler.ValidatePipeline)
 
 	// ─── 流水线执行 ────────────────────────────────
 	r.mux.HandleFunc("POST /api/v1/runs", handler.StartRun)
+	r.mux.HandleFunc("GET /api/v1/runs", handler.ListRuns)
 	r.mux.HandleFunc("GET /api/v1/runs/{id}", handler.GetRun)
 	r.mux.HandleFunc("GET /api/v1/runs/{id}/steps", handler.ListRunSteps)
 	r.mux.HandleFunc("GET /api/v1/runs/{id}/artifacts", handler.ListArtifacts)

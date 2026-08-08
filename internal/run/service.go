@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -24,12 +25,14 @@ import (
 )
 
 type Service struct {
-	store     db.Store
-	mgr       container.Manager
-	wsManager *container.WorkspaceManager
-	credStore *secret.CredentialStore
-	artifacts *artifact.Manager
-	registry  *stepregistry.Registry
+	store         db.Store
+	mgr           container.Manager
+	wsManager     *container.WorkspaceManager
+	credStore     *secret.CredentialStore
+	artifacts     *artifact.Manager
+	registry      *stepregistry.Registry
+	runStore      db.RunStore
+	pipelineStore db.PipelineDefinitionStore
 
 	mu          sync.RWMutex
 	runs        map[string]*Run
@@ -47,7 +50,7 @@ func NewService(store db.Store, mgr container.Manager, ws *container.WorkspaceMa
 	if indexedStore, ok := store.(db.ArtifactStore); ok {
 		artifactStore = indexedStore
 	}
-	return &Service{
+	service := &Service{
 		store:       store,
 		mgr:         mgr,
 		wsManager:   ws,
@@ -60,6 +63,18 @@ func NewService(store db.Store, mgr container.Manager, ws *container.WorkspaceMa
 		subscribers: make(map[string]map[chan Event]struct{}),
 		cancels:     make(map[string]context.CancelFunc),
 	}
+	if indexedStore, ok := store.(db.RunStore); ok {
+		service.runStore = indexedStore
+		if count, err := indexedStore.MarkActiveRunsInterrupted(context.Background(), "worker restarted before run completed", time.Now()); err != nil {
+			slog.Warn("mark interrupted runs", "error", err)
+		} else if count > 0 {
+			slog.Warn("marked interrupted runs after worker restart", "count", count)
+		}
+	}
+	if indexedStore, ok := store.(db.PipelineDefinitionStore); ok {
+		service.pipelineStore = indexedStore
+	}
+	return service
 }
 
 func (s *Service) SetStepRegistry(registry *stepregistry.Registry) {
@@ -109,6 +124,12 @@ func (s *Service) Start(ctx context.Context, spec pipelinespec.PipelineSpec) (*R
 	for i, step := range spec.Steps {
 		stepRuns[i] = StepRun{Name: step.Name, Status: StatusQueued}
 	}
+	if err := s.persistNewRun(run, stepRuns); err != nil {
+		return nil, err
+	}
+	if err := s.persistPipelineDefinition(run.Spec); err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	s.runs[id] = run
@@ -126,6 +147,40 @@ func (s *Service) Start(ctx context.Context, spec pipelinespec.PipelineSpec) (*R
 	go s.execute(execCtx, id, spec)
 
 	return created, nil
+}
+
+func (s *Service) ListRuns(limit, offset int) ([]*Run, error) {
+	if s.runStore == nil {
+		return []*Run{}, nil
+	}
+	records, err := s.runStore.ListRuns(context.Background(), limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	runs := make([]*Run, len(records))
+	for i := range records {
+		runs[i] = runFromRecord(&records[i])
+	}
+	return runs, nil
+}
+
+func (s *Service) ListPipelineDefinitions(limit, offset int) ([]*PipelineDefinition, error) {
+	if s.pipelineStore == nil {
+		return []*PipelineDefinition{}, nil
+	}
+	records, err := s.pipelineStore.ListPipelineDefinitions(context.Background(), limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	definitions := make([]*PipelineDefinition, len(records))
+	for i, record := range records {
+		var spec pipelinespec.PipelineSpec
+		if err := json.Unmarshal([]byte(record.SpecJSON), &spec); err != nil {
+			return nil, err
+		}
+		definitions[i] = &PipelineDefinition{Name: record.Name, Spec: spec, UpdatedAt: record.UpdatedAt}
+	}
+	return definitions, nil
 }
 
 func (s *Service) Cancel(id string) (*Run, bool) {
@@ -156,10 +211,17 @@ func (s *Service) Get(id string) (*Run, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	run, ok := s.runs[id]
-	if !ok {
+	if ok {
+		return cloneRun(run), true
+	}
+	if s.runStore == nil {
 		return nil, false
 	}
-	return cloneRun(run), true
+	record, err := s.runStore.GetRun(context.Background(), id)
+	if err != nil {
+		return nil, false
+	}
+	return runFromRecord(record), true
 }
 
 func (s *Service) Steps(id string) ([]StepRun, bool) {
@@ -167,7 +229,14 @@ func (s *Service) Steps(id string) ([]StepRun, bool) {
 	defer s.mu.RUnlock()
 	steps, ok := s.steps[id]
 	if !ok {
-		return nil, false
+		if s.runStore == nil {
+			return nil, false
+		}
+		records, err := s.runStore.ListStepRuns(context.Background(), id)
+		if err != nil {
+			return nil, false
+		}
+		return stepsFromRecords(records), true
 	}
 	copied := make([]StepRun, len(steps))
 	copy(copied, steps)
@@ -312,6 +381,11 @@ func (s *Service) updateRun(runID string, status Status, errText string) {
 		run.Status = status
 		run.Error = errText
 	}
+	if s.runStore != nil {
+		if run := s.runs[runID]; run != nil {
+			_ = s.runStore.UpdateRun(context.Background(), recordFromRun(run))
+		}
+	}
 }
 
 func (s *Service) finishRun(runID string, status Status, errText string, result *internalpipeline.PipelineResult) {
@@ -330,6 +404,9 @@ func (s *Service) finishRun(runID string, status Status, errText string, result 
 	}
 	delete(s.cancels, runID)
 	s.mu.Unlock()
+	if s.runStore != nil && run != nil {
+		_ = s.runStore.UpdateRun(context.Background(), recordFromRun(run))
+	}
 
 	event := Event{Type: EventRunDone, RunID: runID, Status: status, Message: errText, Time: now}
 	if run != nil {
@@ -352,6 +429,55 @@ func (s *Service) updateStep(runID, name string, status Status, exitCode int, du
 		}
 	}
 	s.steps[runID] = steps
+	if s.runStore != nil {
+		_ = s.runStore.UpdateStepRun(context.Background(), runID, db.StepRunRecord{Name: name, Status: string(status), ExitCode: exitCode, DurationMs: durationMs, Error: errText})
+	}
+}
+
+func (s *Service) persistNewRun(run *Run, steps []StepRun) error {
+	if s.runStore == nil {
+		return nil
+	}
+	data, err := json.Marshal(run.Spec)
+	if err != nil {
+		return fmt.Errorf("marshal run spec: %w", err)
+	}
+	records := make([]db.StepRunRecord, len(steps))
+	for i, step := range steps {
+		records[i] = db.StepRunRecord{Name: step.Name, Status: string(step.Status)}
+	}
+	if err := s.runStore.CreateRun(context.Background(), db.RunRecord{ID: run.ID, Name: run.Name, Status: string(run.Status), SpecJSON: string(data), StartedAt: run.StartedAt}, records); err != nil {
+		return fmt.Errorf("persist run: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) persistPipelineDefinition(spec pipelinespec.PipelineSpec) error {
+	if s.pipelineStore == nil {
+		return nil
+	}
+	data, err := json.Marshal(spec)
+	if err != nil {
+		return err
+	}
+	return s.pipelineStore.SavePipelineDefinition(context.Background(), db.PipelineDefinitionRecord{Name: spec.Name, SpecJSON: string(data), UpdatedAt: time.Now()})
+}
+
+func recordFromRun(run *Run) db.RunRecord {
+	data, _ := json.Marshal(run.Spec)
+	return db.RunRecord{ID: run.ID, Name: run.Name, Status: string(run.Status), SpecJSON: string(data), StartedAt: run.StartedAt, FinishedAt: run.FinishedAt, DurationMs: run.DurationMs, Error: run.Error}
+}
+func runFromRecord(record *db.RunRecord) *Run {
+	var spec pipelinespec.PipelineSpec
+	_ = json.Unmarshal([]byte(record.SpecJSON), &spec)
+	return &Run{ID: record.ID, Name: record.Name, Status: Status(record.Status), Spec: spec, StartedAt: record.StartedAt, FinishedAt: record.FinishedAt, DurationMs: record.DurationMs, Error: record.Error}
+}
+func stepsFromRecords(records []db.StepRunRecord) []StepRun {
+	steps := make([]StepRun, len(records))
+	for i, record := range records {
+		steps[i] = StepRun{Name: record.Name, Status: Status(record.Status), ExitCode: record.ExitCode, DurationMs: record.DurationMs, Error: record.Error}
+	}
+	return steps
 }
 
 func (s *Service) publish(event Event) {

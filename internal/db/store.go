@@ -27,6 +27,48 @@ type ArtifactRecord struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// RunStore persists API-facing execution state independently from final
+// pipeline results, so a worker restart does not erase the user's Run view.
+type RunStore interface {
+	CreateRun(ctx context.Context, run RunRecord, steps []StepRunRecord) error
+	UpdateRun(ctx context.Context, run RunRecord) error
+	UpdateStepRun(ctx context.Context, runID string, step StepRunRecord) error
+	GetRun(ctx context.Context, id string) (*RunRecord, error)
+	ListRuns(ctx context.Context, limit, offset int) ([]RunRecord, error)
+	ListStepRuns(ctx context.Context, runID string) ([]StepRunRecord, error)
+	MarkActiveRunsInterrupted(ctx context.Context, message string, finishedAt time.Time) (int, error)
+}
+
+type PipelineDefinitionStore interface {
+	SavePipelineDefinition(ctx context.Context, definition PipelineDefinitionRecord) error
+	ListPipelineDefinitions(ctx context.Context, limit, offset int) ([]PipelineDefinitionRecord, error)
+}
+
+type PipelineDefinitionRecord struct {
+	Name      string
+	SpecJSON  string
+	UpdatedAt time.Time
+}
+
+type RunRecord struct {
+	ID         string
+	Name       string
+	Status     string
+	SpecJSON   string
+	StartedAt  time.Time
+	FinishedAt time.Time
+	DurationMs int64
+	Error      string
+}
+
+type StepRunRecord struct {
+	Name       string
+	Status     string
+	ExitCode   int
+	DurationMs int64
+	Error      string
+}
+
 // ─── 存储接口 ─────────────────────────────────────────────
 
 // Store 定义流水线的持久化存储接口。

@@ -100,6 +100,19 @@ func (h *Handler) ListStepTypes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stepregistry.Builtins())
 }
 
+func (h *Handler) ListPipelineDefinitions(w http.ResponseWriter, r *http.Request) {
+	if h.runSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "run service not configured")
+		return
+	}
+	definitions, err := h.runSvc.ListPipelineDefinitions(20, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, definitions)
+}
+
 // ─── 流水线 API ───────────────────────────────────────────
 
 // RunPipelineRequest 是运行流水线的请求体。
@@ -180,6 +193,19 @@ func (h *Handler) GetRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, run)
+}
+
+func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
+	if h.runSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "run service not configured")
+		return
+	}
+	runs, err := h.runSvc.ListRuns(20, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, runs)
 }
 
 func (h *Handler) ListRunSteps(w http.ResponseWriter, r *http.Request) {

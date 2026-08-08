@@ -10,12 +10,13 @@ import (
 type Status string
 
 const (
-	StatusQueued    Status = "queued"
-	StatusRunning   Status = "running"
-	StatusSuccess   Status = "success"
-	StatusFailed    Status = "failed"
-	StatusCancelled Status = "cancelled"
-	StatusSkipped   Status = "skipped"
+	StatusQueued      Status = "queued"
+	StatusRunning     Status = "running"
+	StatusSuccess     Status = "success"
+	StatusFailed      Status = "failed"
+	StatusCancelled   Status = "cancelled"
+	StatusInterrupted Status = "interrupted"
+	StatusSkipped     Status = "skipped"
 )
 
 type EventType string
@@ -36,6 +37,12 @@ type Run struct {
 	FinishedAt time.Time                 `json:"finished_at,omitempty"`
 	DurationMs int64                     `json:"duration_ms,omitempty"`
 	Error      string                    `json:"error,omitempty"`
+}
+
+type PipelineDefinition struct {
+	Name      string                    `json:"name"`
+	Spec      pipelinespec.PipelineSpec `json:"spec"`
+	UpdatedAt time.Time                 `json:"updated_at"`
 }
 
 type StepRun struct {

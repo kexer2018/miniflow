@@ -152,6 +152,55 @@ func TestPipelineResult_GetNotFound(t *testing.T) {
 	}
 }
 
+func TestRunStoreMarksActiveRunsInterrupted(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	started := time.Now().Add(-time.Minute)
+	if err := store.CreateRun(ctx, RunRecord{ID: "run-restart", Name: "restart", Status: "running", SpecJSON: `{}`, StartedAt: started}, []StepRunRecord{{Name: "build", Status: "running"}, {Name: "test", Status: "queued"}}); err != nil {
+		t.Fatalf("CreateRun failed: %v", err)
+	}
+	count, err := store.MarkActiveRunsInterrupted(ctx, "worker restarted", time.Now())
+	if err != nil || count != 1 {
+		t.Fatalf("unexpected interruption result count=%d err=%v", count, err)
+	}
+	run, err := store.GetRun(ctx, "run-restart")
+	if err != nil || run.Status != "interrupted" || run.Error != "worker restarted" {
+		t.Fatalf("unexpected recovered run %#v, err=%v", run, err)
+	}
+	steps, err := store.ListStepRuns(ctx, "run-restart")
+	if err != nil || len(steps) != 2 || steps[0].Status != "interrupted" || steps[1].Status != "interrupted" {
+		t.Fatalf("unexpected recovered steps %#v, err=%v", steps, err)
+	}
+}
+
+func TestRunAndPipelineDefinitionLists(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now()
+	if err := store.SavePipelineDefinition(ctx, PipelineDefinitionRecord{Name: "build", SpecJSON: `{"name":"build","version":"1.0"}`, UpdatedAt: now.Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePipelineDefinition(ctx, PipelineDefinitionRecord{Name: "build", SpecJSON: `{"name":"build","version":"1.1"}`, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	definitions, err := store.ListPipelineDefinitions(ctx, 20, 0)
+	if err != nil || len(definitions) != 1 || definitions[0].SpecJSON != `{"name":"build","version":"1.1"}` {
+		t.Fatalf("unexpected definitions %#v, err=%v", definitions, err)
+	}
+	if err := store.CreateRun(ctx, RunRecord{ID: "older", Name: "build", Status: "success", SpecJSON: `{}`, StartedAt: now.Add(-time.Minute)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRun(ctx, RunRecord{ID: "newer", Name: "build", Status: "running", SpecJSON: `{}`, StartedAt: now}, nil); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := store.ListRuns(ctx, 20, 0)
+	if err != nil || len(runs) != 2 || runs[0].ID != "newer" {
+		t.Fatalf("unexpected runs %#v, err=%v", runs, err)
+	}
+}
+
 func TestPipelineResult_List(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
